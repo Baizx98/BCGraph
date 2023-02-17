@@ -12,6 +12,8 @@ Testing/
 _deps
 generated
 
+mytest.py
+
 # Mac
 .DS_Store
 

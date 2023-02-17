@@ -3,9 +3,9 @@
 FROM pytorch/pytorch:1.9.0-cuda10.2-cudnn7-devel
 
 # Install PyG.
-RUN CPATH=/usr/local/cuda/include:$CPATH && \
-    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH && \
-    DYLD_LIBRARY_PATH=/usr/local/cuda/lib:$DYLD_LIBRARY_PATH
+RUN CPATH=/home/bzx/local/cuda/include:$CPATH && \
+    LD_LIBRARY_PATH=/home/bzx/local/cuda/lib64:$LD_LIBRARY_PATH && \
+    DYLD_LIBRARY_PATH=/home/bzx/local/cuda/lib:$DYLD_LIBRARY_PATH
 
 RUN pip install scipy==1.5.0
 

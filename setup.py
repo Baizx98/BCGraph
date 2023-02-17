@@ -14,11 +14,12 @@ def find_cuda():
     elif path is not None:
         return path
     else:
-        return '/usr/local/cuda'
+        return '/home/bzx/local/cuda'
 
 
 def have_cuda():
-    if os.getenv('QUIVER_ENABLE_CUDA') == 1: return True
+    if os.getenv('QUIVER_ENABLE_CUDA') == 1:
+        return True
     import torch
     return torch.cuda.is_available()
 
