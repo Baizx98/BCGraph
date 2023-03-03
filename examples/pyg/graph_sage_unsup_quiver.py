@@ -39,7 +39,8 @@ train_loader = torch.utils.data.DataLoader(train_idx,
 
 csr_topo = quiver.CSRTopo(data.edge_index)
 
-quiver_sampler = GraphSageSampler(csr_topo, sizes =[10, 10], device=0)
+quiver_sampler = GraphSageSampler(csr_topo, sizes=[10, 10], device=0)
+
 
 def sample(edge_index, batch):
     batch = torch.tensor(batch)
@@ -49,9 +50,9 @@ def sample(edge_index, batch):
     # example) and a random node (as negative example):
     pos_batch = random_walk(row, col, batch, walk_length=1,
                             coalesced=False)[:, 1]
-    
+
     neg_batch = torch.randint(0, csr_topo.indptr.shape[-1] - 1, (batch.numel(), ),
-                                dtype=torch.long)
+                              dtype=torch.long)
 
     batch = torch.cat([batch, pos_batch, neg_batch], dim=0)
     return quiver_sampler.sample(batch)
@@ -92,8 +93,10 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 # Original Pyg Code
 ####################
 x, edge_index = data.x.to(device), data.edge_index.to(device)
-quiver_feature = quiver.Feature(rank=0, device_list=[0], device_cache_size="15M", cache_policy="device_replicate", csr_topo=csr_topo)
+quiver_feature = quiver.Feature(rank=0, device_list=[
+                                0], device_cache_size="15M", cache_policy="device_replicate", csr_topo=csr_topo)
 quiver_feature.from_cpu_tensor(data.x)
+
 
 def train():
     model.train()

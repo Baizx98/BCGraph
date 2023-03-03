@@ -12,8 +12,9 @@ from torch_geometric.nn import SAGEConv
 import time
 
 #root = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'products')
-root = "/data/products/"
+root = "data/products/"  # 注意修改数据集路径
 dataset = PygNodePropPredDataset('ogbn-products', root)
+# 划分数据集，返回一个字典 {'train': train_idx, 'valid': valid_idx, 'test': test_idx}
 split_idx = dataset.get_idx_split()
 evaluator = Evaluator(name='ogbn-products')
 data = dataset[0]
@@ -172,7 +173,8 @@ for run in range(1, 11):
     for epoch in range(1, 21):
         epoch_start = time.time()
         loss, acc = train(epoch)
-        print(f'Epoch {epoch:02d}, Loss: {loss:.4f}, Approx. Train: {acc:.4f}, Epoch Time: {time.time() - epoch_start}')
+        print(
+            f'Epoch {epoch:02d}, Loss: {loss:.4f}, Approx. Train: {acc:.4f}, Epoch Time: {time.time() - epoch_start}')
 
         if epoch > 5:
             train_acc, val_acc, test_acc = test()

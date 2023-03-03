@@ -3,6 +3,20 @@ import torch_quiver as torch_qv
 
 
 class HostRankTable:
+    """
+    这是一个HostRankTable类，它用于处理在分布式训练环境下的主机和进程之间的通信。
+
+    在初始化时，它会接受两个参数：主机的数量hosts和每个主机上的进程数量rank_per_host。然后它会创建一个host2ranks字典，将每个主机与其上的进程列表关联起来，以及一个rank2host列表，将每个进程与其所在的主机关联起来。通过这种方式，HostRankTable能够快速地查找给定进程或主机的相应进程或主机。
+
+    该类提供了以下方法：
+
+    ranks(host)：返回给定主机上的进程列表。
+    host(rank)：返回给定进程所在的主机。
+    remote_peer(rank, host)：返回与给定进程和主机相对应的远程进程。
+    remote_peers(rank, hosts)：返回给定进程和主机列表的所有远程进程的元组列表。
+    get_comm_mat(flat_allreduce)：将输入的1D张量flat_allreduce转换为一个通信矩阵。通信矩阵是一个大小为hosts x rank_per_host的矩阵，其中每个元素表示进程之间的通信关系。
+    通过这些方法，HostRankTable能够方便地管理分布式训练环境下的进程之间的通信。
+    """
     def __init__(self, hosts, rank_per_host):
         self.hosts = hosts
         self.rank_per_host = rank_per_host

@@ -19,6 +19,7 @@ import time
 ####################
 import quiver
 
+
 class SAGE(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_layers):
         super(SAGE, self).__init__()
@@ -88,7 +89,8 @@ def run(rank, world_size, quiver_sampler, quiver_feature, y, edge_index, split_i
     train_idx, val_idx, test_idx = split_idx['train'], split_idx['valid'], split_idx['test']
     train_idx = train_idx.split(train_idx.size(0) // world_size)[rank]
 
-    train_loader = torch.utils.data.DataLoader(train_idx, batch_size=1024, pin_memory=True)
+    train_loader = torch.utils.data.DataLoader(
+        train_idx, batch_size=1024, pin_memory=True)
 
     if rank == 0:
         subgraph_loader = NeighborSampler(edge_index, node_idx=None,
@@ -119,12 +121,14 @@ def run(rank, world_size, quiver_sampler, quiver_feature, y, edge_index, split_i
         dist.barrier()
 
         if rank == 0:
-            print(f'Epoch: {epoch:03d}, Loss: {loss:.4f}, Epoch Time: {time.time() - epoch_start}')
+            print(
+                f'Epoch: {epoch:03d}, Loss: {loss:.4f}, Epoch Time: {time.time() - epoch_start}')
 
         if rank == 0 and epoch % 5 == 0:  # We evaluate on a single GPU for now
             model.eval()
             with torch.no_grad():
-                out = model.module.inference(quiver_feature, rank, subgraph_loader)
+                out = model.module.inference(
+                    quiver_feature, rank, subgraph_loader)
             res = out.argmax(dim=-1) == y.cpu()
             acc1 = int(res[train_idx].sum()) / train_idx.numel()
             acc2 = int(res[val_idx].sum()) / val_idx.numel()
@@ -137,27 +141,31 @@ def run(rank, world_size, quiver_sampler, quiver_feature, y, edge_index, split_i
 
 
 if __name__ == '__main__':
-    root = "/data/products"
+    print("data is preparing...")
+    root = "data/products"
     dataset = PygNodePropPredDataset('ogbn-products', root)
     data = dataset[0]
 
     split_idx = dataset.get_idx_split()
-    world_size = torch.cuda.device_count()
-    
+    world_size = 2
+
     ##############################
     # Create Sampler And Feature
     ##############################
     csr_topo = quiver.CSRTopo(data.edge_index)
-    quiver_sampler = quiver.pyg.GraphSageSampler(csr_topo, [15, 10, 5], 0, mode="GPU")
+    quiver_sampler = quiver.pyg.GraphSageSampler(
+        csr_topo, [15, 10, 5], 0, mode="GPU")
     feature = torch.zeros(data.x.shape)
     feature[:] = data.x
-    quiver_feature = quiver.Feature(rank=0, device_list=list(range(world_size)), device_cache_size="2G", cache_policy="device_replicate", csr_topo=csr_topo)
+    quiver_feature = quiver.Feature(rank=0, device_list=[
+                                    1, 2], device_cache_size="64M", cache_policy="device_replicate", csr_topo=csr_topo)
     quiver_feature.from_cpu_tensor(feature)
 
     print('Let\'s use', world_size, 'GPUs!')
     mp.spawn(
         run,
-        args=(world_size, quiver_sampler, quiver_feature, data.y.squeeze(), data.edge_index, split_idx, dataset.num_features, dataset.num_classes),
+        args=(world_size, quiver_sampler, quiver_feature, data.y.squeeze(
+        ), data.edge_index, split_idx, dataset.num_features, dataset.num_classes),
         nprocs=world_size,
         join=True
     )

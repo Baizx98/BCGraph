@@ -302,8 +302,26 @@ class TorchQuiver
         }
         return std::make_tuple(out_vertices, row_idx, col_idx);
     }
+    /*这是一个 C++ 函数，使用了 Thrust 库对 GPU
+    上的数据进行操作，实现了将输入和输出节点的 ID
+    重新索引的功能。该函数的输入参数为三个张量，分别是输入节点 ID、输出节点 ID
+    和每个输入节点对应的输出节点数量。该函数的返回值为一个元组，包含三个张量，分别为重新索引后的输出节点
+    ID、行索引和列索引。
+
+    该函数首先创建了三个 Thrust 向量（total_inputs、total_outputs 和
+    input_prefix），分别用于存储输入节点 ID、输出节点 ID
+    和每个输入节点对应的输出节点数量的前缀和。然后将输入节点 ID
+    和每个输入节点对应的输出节点数量的前缀和拷贝到对应的 Thrust 向量中，并通过
+    Thrust 库中的 exclusive_scan
+    函数对输入节点对应的输出节点数量进行前缀和运算，得到 input_prefix
+    向量。接着调用 reindex_kernel 函数，该函数使用 CUDA 核函数实现了对输出节点
+    ID 进行重新索引的功能，并将结果存储在 subset
+    向量中。最后，根据输入节点对应的输出节点数量和 subset 向量，重新生成输出节点
+    ID、行索引和列索引，并作为元组返回。在生成行索引和列索引时，还使用了 Thrust
+    库中的 sequence 函数和 for_each 函数对数据进行操作。*/
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
-    reindex_single(torch::Tensor inputs, torch::Tensor outputs, torch::Tensor count)
+    reindex_single(torch::Tensor inputs, torch::Tensor outputs,
+                   torch::Tensor count)
     {
         using T = int64_t;
         cudaStream_t stream = 0;
@@ -323,21 +341,23 @@ class TorchQuiver
         ptr = outputs.data_ptr<T>();
         bs = outputs.size(0);
         thrust::copy(ptr, ptr + bs, total_outputs.begin());
-    
+
         const size_t m = inputs.size(0);
         using it = thrust::counting_iterator<T>;
-    
+
         thrust::device_vector<T> subset;
-        TorchQuiver::reindex_kernel(stream, total_inputs, total_outputs, subset);
-    
+        TorchQuiver::reindex_kernel(stream, total_inputs, total_outputs,
+                                    subset);
+
         int tot = total_outputs.size();
-        torch::Tensor out_vertices = torch::empty(subset.size(), inputs.options());
+        torch::Tensor out_vertices =
+            torch::empty(subset.size(), inputs.options());
         torch::Tensor row_idx = torch::empty(tot, inputs.options());
         torch::Tensor col_idx = torch::empty(tot, inputs.options());
         {
             thrust::device_vector<T> seq(count.size(0));
             thrust::sequence(policy, seq.begin(), seq.end());
-    
+
             thrust::for_each(
                 policy, it(0), it(m),
                 [prefix = thrust::raw_pointer_cast(input_prefix.data()),
@@ -349,14 +369,14 @@ class TorchQuiver
                         out[prefix[i] + j] = in[i];
                     }
                 });
-            thrust::copy(subset.begin(), subset.end(), out_vertices.data_ptr<T>());
+            thrust::copy(subset.begin(), subset.end(),
+                         out_vertices.data_ptr<T>());
             thrust::copy(total_outputs.begin(), total_outputs.end(),
                          col_idx.data_ptr<T>());
         }
         return std::make_tuple(out_vertices, row_idx, col_idx);
     }
 };
-
 
 TorchQuiver new_quiver_from_csr_array(torch::Tensor &input_indptr,
                                       torch::Tensor &input_indices,
@@ -497,6 +517,20 @@ TorchQuiver new_quiver_from_edge_index(size_t n,
 }
 }  // namespace quiver
 
+/*
+这是一个C++函数，用于在Python中注册一个名为"register_cuda_quiver_sample"的模块。该模块定义了一些与CUDA
+Quiver相关的函数和类，供Python代码调用。
+
+该函数首先将名为"device_quiver_from_edge_index"和"device_quiver_from_csr_array"的函数导入Python模块中，这两个函数用于从边列表或CSR数组构建Quiver。
+
+接下来，该函数使用"py::class_"函数创建一个名为"Quiver"的Python类，表示Quiver对象。该类具有以下方法：
+
+"sample_sub"方法：使用流对象采样子图。
+"sample_neighbor"方法：采样Quiver对象的邻居节点。
+"cal_neighbor_prob"方法：计算Quiver对象的邻居节点的概率。
+"reindex_single"方法：重新索引单个节点。
+所有这些方法都使用了Python的"py::call_guard"装饰器，用于释放Python全局解释器锁（GIL），以便在调用CUDA代码时，可以允许其他线程在Python中运行。
+*/
 void register_cuda_quiver_sample(pybind11::module &m)
 {
     m.def("device_quiver_from_edge_index", &quiver::new_quiver_from_edge_index);

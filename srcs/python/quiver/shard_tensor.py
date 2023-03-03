@@ -35,12 +35,14 @@ class DeviceCollectionJob:
 class ShardTensorConfig:
     """
     """
+
     def __init__(self, device_memory_budget):
         self.tensor_offset_device = {}
 
         self.device_memory_budget = device_memory_budget
         for device in device_memory_budget:
-            self.device_memory_budget[device] = parse_size(self.device_memory_budget[device])
+            self.device_memory_budget[device] = parse_size(
+                self.device_memory_budget[device])
 
     @property
     def device_list(self):
@@ -51,6 +53,7 @@ class ShardTensorConfig:
 class ShardTensor:
     """[summary]
     """
+
     def __init__(self, current_device: int,
                  shard_tensor_config: ShardTensorConfig):
         self.shard_tensor = torch_qv.ShardTensor(current_device)
@@ -99,7 +102,7 @@ class ShardTensor:
         Args:
             tensor: pytorch cpu tensor
             memory_budget: memory size in bytes
-            
+
         """
         # 暂时先假设为float tensor
         element_size = tensor.shape[1] * tensor.element_size()
