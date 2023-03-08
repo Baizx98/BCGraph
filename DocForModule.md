@@ -5,6 +5,7 @@
   - [NamedTuple](#namedtuple)
   - [py::call\_guard装饰器](#pycall_guard装饰器)
   - [@classmethod注解](#classmethod注解)
+- [开发方法](#开发方法)
 
 # 代码模块说明
 
@@ -119,3 +120,6 @@ classmethod 是一个 Python 内置的装饰器（decorator），它用于修饰
 - 通过类对象调用 
  
 classmethod 能够保证上述两种调用方式返回的结果相同，因为第一个参数都是类对象。因此，它通常用于实现与类相关的工厂方法，或者创建可替代类构造函数的方法。
+
+# 开发方法
+模块调试
