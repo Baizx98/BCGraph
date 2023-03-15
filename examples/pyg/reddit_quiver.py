@@ -24,9 +24,10 @@ train_idx = data.train_mask.nonzero(as_tuple=False).view(-1)
 train_loader = torch.utils.data.DataLoader(train_idx,
                                            batch_size=1024,
                                            shuffle=True,
-                                           drop_last=True) # Quiver
-csr_topo = quiver.CSRTopo(data.edge_index) # Quiver
-quiver_sampler = quiver.pyg.GraphSageSampler(csr_topo, sizes=[25, 10], device=0, mode='GPU') # Quiver
+                                           drop_last=True)  # Quiver
+csr_topo = quiver.CSRTopo(data.edge_index)  # Quiver
+quiver_sampler = quiver.pyg.GraphSageSampler(
+    csr_topo, sizes=[25, 10], device=0, mode='GPU')  # Quiver
 
 
 subgraph_loader = NeighborSampler(data.edge_index, node_idx=None, sizes=[-1],
@@ -96,8 +97,9 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 # Step 2: Using Quiver's Feature
 ################################
 # x = data.x.to(device) # Original PyG Code
-x = quiver.Feature(rank=0, device_list=[0], device_cache_size="4G", cache_policy="device_replicate", csr_topo=csr_topo) # Quiver
-x.from_cpu_tensor(data.x) # Quiver
+x = quiver.Feature(rank=0, device_list=[
+                   0], device_cache_size="4G", cache_policy="device_replicate", csr_topo=csr_topo)  # Quiver
+x.from_cpu_tensor(data.x)  # Quiver
 
 y = data.y.squeeze().to(device)
 
@@ -113,8 +115,8 @@ def train(epoch):
     # Step 3: Training the PyG Model with Quiver
     ############################################
     # for batch_size, n_id, adjs in train_loader: # Original PyG Code
-    for seeds in train_loader: # Quiver
-        n_id, batch_size, adjs = quiver_sampler.sample(seeds) # Quiver
+    for seeds in train_loader:  # Quiver
+        n_id, batch_size, adjs = quiver_sampler.sample(seeds)  # Quiver
         # `adjs` holds a list of `(edge_index, e_id, size)` tuples.
         adjs = [adj.to(device) for adj in adjs]
 

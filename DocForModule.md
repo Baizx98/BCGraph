@@ -5,7 +5,9 @@
   - [NamedTuple](#namedtuple)
   - [py::call\_guard装饰器](#pycall_guard装饰器)
   - [@classmethod注解](#classmethod注解)
+  - [CSR格式](#csr格式)
 - [开发方法](#开发方法)
+  - [在Python中调用C++模块的方式](#在python中调用c模块的方式)
 
 # 代码模块说明
 
@@ -121,5 +123,131 @@ classmethod 是一个 Python 内置的装饰器（decorator），它用于修饰
  
 classmethod 能够保证上述两种调用方式返回的结果相同，因为第一个参数都是类对象。因此，它通常用于实现与类相关的工厂方法，或者创建可替代类构造函数的方法。
 
+
+## CSR格式
+CSR (Compressed Sparse Row) 是一种用于稀疏矩阵存储的格式，它可以有效地压缩矩阵中的空白元素，从而节省存储空间。在 CSR 格式中，矩阵被表示为三个数组：行指针数组、列索引数组和值数组。  
+
+具体来说，行指针数组 row_ptr 记录了每一行在列索引数组和值数组中的起始位置和结束位置，例如 row_ptr[i] 表示第 i 行在列索引数组和值数组中的起始位置，row_ptr[i+1] 表示第 i 行的结束位置。这个数组的长度为矩阵的行数加一。  
+
+列索引数组 col_idx 记录了每个非空元素所在的列的索引，例如 col_idx[j] 表示值数组中的第 j 个元素所在的列的索引。这个数组的长度为矩阵中非空元素的个数。  
+
+值数组 values 记录了每个非空元素的值，例如 values[j] 表示第 j 个非空元素的值。这个数组的长度也为矩阵中非空元素的个数。  
+
+举个例子，假设有如下的稀疏矩阵：
+```
+1 0 0
+0 2 0
+0 0 3
+0 4 5
+```
+那么它的 CSR 表示就是：
+```python
+row_ptr = [0, 1, 2, 3, 5]
+col_idx = [0, 1, 2, 1, 2]
+values = [1, 2, 3, 4, 5]
+```
+其中，`row_ptr`表示每一行的起始位置和结束位置，第一行从位置 0 开始，第二行从位置 1 开始，第三行从位置 2 开始，第四行从位置 3 开始，最后一行从位置 5 结束。`col_idx`表示每个非空元素所在的列的索引，第一个非空元素在第 0 列，第二个在第 1 列，第三个在第 2 列，第四个在第 1 列，最后一个在第 2 列。values 表示每个非空元素的值，依次为 1、2、3、4、5。
 # 开发方法
 模块调试
+
+## 在Python中调用C++模块的方式
+1. 导入pybind11头文件：
+   ```c++
+   #include <pybind11/pybind11.h>
+   ```
+2. 在需要导出的C++模块的文件中，使用PYBIND11_MODULE宏定义一个模块：
+   ```c++
+   PYBIND11_MODULE(module_name, module_variable) {
+    // Code to expose C++ functions, classes, etc. to Python
+    }
+    ```
+    module_name是模块的名称，将用于Python导入模块时的引用。  
+    module_variable是一个C++变量的名称，该变量将在Python中表示整个模块。
+3. 在PYBIND11_MODULE块内，使用pybind11库中的函数来将C++函数、类等导出到Python中：  
+    - 将C++函数导出到Python：
+        ```c++
+        m.def("function_name", &function_name, "docstring");
+        ```
+      - `m.def`是pybind11库的函数，用于将C++函数导出到Python中。  
+      - `"function_name"`是在Python中使用的函数名称。
+      - '&function_name'是C++函数的地址。  
+      - '"docstring"'是在Python中使用的文档字符串。  
+    - 将C++类导出到Python：
+        ```c++
+        py::class_<Class>(m, "Class")
+            .def(py::init<>())
+            .def("member_function", &Class::member_function, "docstring")
+            .def_readwrite("member_variable", &Class::member_variable, "docstring");
+        ```
+        - py::class_是pybind11库的类模板，用于将C++类导出到Python中。
+        - Class是C++类的名称。
+        - m是Python模块的变量名。
+        - .def(py::init<>())是构造函数的定义。
+        - .def("member_function", &Class::member_function, "docstring")是将成员函数导出到Python中。
+        - .def_readwrite("member_variable", &Class::member_variable, "docstring")是将成员变量导出到Python中。
+4. 编译C++代码，并将其链接到Python解释器中。
+    ```r
+    g++ -O3 -Wall -shared -std=c++11 -fPIC `python3 -m pybind11 --includes` example.cpp -o example`python3-config --extension-suffix`
+    ```
+1. 在Python中使用导出的模块：
+
+    ```python
+    import module_name
+
+    # Call a C++ function
+    module_name.function_name()
+
+    # Create a C++ class instance
+    obj = module_name.Class()
+
+    # Call a member
+    ```
+
+## py::call_guard<py::gil_scoped_release>()
+`py::call_guard<py::gil_scoped_release>()`是Pybind11库中用于在C++函数调用期间释放全局解释器锁（GIL）的函数调用包装器。
+
+GIL是CPython（Python的参考实现）中的一种机制，它确保只有一个线程在任何时刻执行Python字节码。这可能会导致多线程应用程序的性能瓶颈，特别是当大量时间花费在I/O绑定任务上时。
+
+通过使用`py::call_guard<py::gil_scoped_release>()`，Pybind11在调用C++函数之前释放GIL，使得其他Python线程可以并发执行。一旦函数调用完成，Pybind11会自动重新获取GIL。这可以显著提高使用Pybind11通过C++扩展的多线程Python应用程序的性能。
+
+值得注意的是，在某些情况下释放GIL可能不安全，因为某些Python对象和函数需要保持GIL。因此，应谨慎使用此功能，并在生产环境中彻底测试其使用情况。
+
+## edge_index 
+`edge_index`是一个二维张量，用于表示图中所有边的连接关系。它的大小为2 x E，其中E是边的数量，每列代表一条边。例如，`edge_index[0][i]`和`edge_index[1][i]`表示第i条边连接的两个节点的索引。在PyG中，`edge_index`通常作为图数据的一个属性，可以通过data.edge_index访问。 
+## node_idx
+`node_idx`是一个一维张量，用于表示需要进行计算的节点的索引。在GNN训练中，通常只对一部分节点进行计算，而不是对所有节点进行计算。这个一部分节点的索引就由`node_idx`来表示。在PyG中，`node_idx`通常作为一个参数传递给GNN模型的forward方法。
+
+## data.x
+在图神经网络（GNN）的训练中，`data.x`通常用于表示节点的特征矩阵。它是一个二维张量，大小为N x F，其中N是节点的数量，F是每个节点的特征向量的维度。在PyG中，data.x通常作为图数据的一个属性，可以通过`data.x`访问。
+
+节点的特征向量通常包含关于节点的各种信息，例如节点的内容、节点的位置、节点的度等等。在GNN模型中，节点的特征向量通常作为输入进行处理，通过节点之间的连接关系和节点的特征向量，模型可以学习到节点之间的关系以及对节点进行分类、预测等任务。
+
+在GNN训练中，通常需要对节点的特征矩阵进行一些预处理，例如对节点的特征进行归一化、将节点的特征投影到低维空间等等，以便模型能够更好地学习节点之间的关系。预处理的具体方法取决于应用场景和数据集的特点。
+
+## adj
+在这段代码中，adjs代表了一批子图，其中每个子图由多个邻接矩阵组成，每个邻接矩阵都是一个元组(edge_index, e_id, size)，其中edge_index表示邻接矩阵的边索引，e_id表示邻接矩阵的边索引相对于全局边索引的偏移量，size表示邻接矩阵的大小。
+
+具体来说，adjs的长度等于len(sizes)，也就是我们在定义NeighborSampler时指定的邻居采样大小数组的长度。在这个例子中，sizes=[25, 10]，所以adjs的长度为2。
+
+每个元组(edge_index, e_id, size)代表一个邻接矩阵，edge_index是一个形状为(2, num_edges)的张量，其中num_edges表示边的数量，edge_index[0]和edge_index[1]分别是源节点和目标节点的索引。e_id是一个整数，表示邻接矩阵的边索引相对于全局边索引的偏移量。size是一个整数，表示邻接矩阵的大小。
+
+因此，adjs的长度是2，每个元素都是一个包含多个邻接矩阵的元组，每个邻接矩阵由一个边索引、一个偏移量和一个大小组成。
+
+## 在调用multiprocessing.spawn函数时，参数args中为什么没有rank
+multiprocessing.spawn 函数是 Python 中用于多进程编程的模块之一，它允许你启动新的 Python 解释器进程，并在每个进程中执行指定的函数。
+
+当使用 multiprocessing.spawn 启动多个进程时，每个进程都可以访问它自己的进程编号，这个编号通常称为进程的 "rank"，但是在 args 参数中并没有直接指定进程的 rank。实际上，rank 是由 multiprocessing.spawn 在内部处理的。
+
+当你调用 multiprocessing.spawn 函数时，你需要指定一个函数来在新的进程中执行。这个函数的第一个参数通常被称为 rank，它是一个整数，表示当前进程的编号。在 multiprocessing.spawn 中，这个参数是隐式传递的。也就是说，spawn 函数会自动为每个进程分配一个 rank，并将它作为第一个参数传递给指定的函数。
+
+例如，假设你想要启动 4 个进程，并在每个进程中执行一个名为 my_function 的函数。你可以这样调用 spawn 函数：
+```python
+import multiprocessing
+
+def my_function(rank):
+    print("Hello from process", rank)
+
+if __name__ == '__main__':
+    multiprocessing.spawn(my_function, args=(,))
+```
+在这个例子中，spawn 函数会启动 4 个进程，并在每个进程中执行 my_function 函数。args 参数为空，因为我们不需要在启动进程时指定任何其他参数。每个进程都会自动获取一个 rank 参数，它将作为 my_function 函数的第一个参数传递。my_function 函数将在每个进程中打印出 "Hello from process" 后面跟随该进程的 rank 值。
