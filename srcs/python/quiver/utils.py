@@ -247,6 +247,21 @@ def reindex_feature(graph: CSRTopo, feature, ratio):
     feature, new_order = reindex_by_config(graph, feature, ratio)
     return feature, new_order
 
+def my_reindex_feature(feature, ratio, norder):
+    feature, new_order = my_reindex_by_config(feature, ratio, norder)
+    return feature, new_order
+def my_reindex_by_config(graph_feature, gpu_portion,norder):
+
+    node_count = norder.shape[0] 
+    total_range = torch.arange(node_count, dtype=torch.long) 
+    perm_range = torch.randperm(int(node_count * gpu_portion)) 
+    degree = norder 
+    _, prev_order = torch.sort(degree, descending=True)  
+    new_order = torch.zeros_like(prev_order)
+    prev_order[:int(node_count * gpu_portion)] = prev_order[perm_range]#排好序后，前x个节点随机打乱
+    new_order[prev_order] = total_range
+    graph_feature = graph_feature[prev_order] 
+    return graph_feature, new_order
 
 def init_p2p(device_list: List[int]):
     """Try to enable p2p acess between devices in device_list

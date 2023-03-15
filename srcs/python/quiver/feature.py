@@ -1,6 +1,6 @@
 import torch
 from quiver.shard_tensor import ShardTensor, ShardTensorConfig, Topo
-from quiver.utils import reindex_feature, CSRTopo, parse_size
+from quiver.utils import reindex_feature, CSRTopo, parse_size, my_reindex_feature
 from typing import List
 import numpy as np
 from torch._C import device
@@ -56,6 +56,11 @@ class Feature(object):
         self.ipc_handle_ = None
         self.mmap_handle_ = None
         self.disk_map = None
+
+        self.report = False
+        self.cache_size = 0
+        self.miss_num = 0
+        self.total_num = 0
         assert self.clique_device_symmetry_check(
         ), f"\n{self.topo.info()}\nDifferent p2p clique size NOT equal"
 
@@ -98,6 +103,7 @@ class Feature(object):
         """
 
         cache_size = self.cal_size(cpu_tensor, cache_memory_budget)
+        self.cache_size = min(cache_size, cpu_tensor.shape[0])
         return [cpu_tensor[:cache_size], cpu_tensor[cache_size:]]
 
     def set_mmap_file(self, path, disk_map):
@@ -225,7 +231,7 @@ class Feature(object):
                 shard_tensor.append(self.cpu_part, -1)
                 self.clique_tensor_list[clique_id] = shard_tensor
 
-    def from_cpu_tensor(self, cpu_tensor: torch.Tensor):
+    def from_cpu_tensor(self, cpu_tensor: torch.Tensor, norder=None):
         """Create quiver.Feature from a pytorh cpu float tensor
 
         函数的具体操作如下：
@@ -253,7 +259,11 @@ class Feature(object):
             f"LOG>>> {min(100, int(100 * cache_memory_budget / cpu_tensor.numel() / cpu_tensor.element_size()))}% data cached"
         )
         if self.csr_topo is not None:
-            if self.csr_topo.feature_order is None:
+            if norder is not None:
+                cpu_tensor, self.csr_topo.feature_order = my_reindex_feature(
+                    cpu_tensor, shuffle_ratio, norder)
+            elif self.csr_topo.feature_order is None:
+            #if self.csr_topo.feature_order is None:
                 cpu_tensor, self.csr_topo.feature_order = reindex_feature(
                     self.csr_topo, cpu_tensor, shuffle_ratio)
             self.feature_order = self.csr_topo.feature_order.to(self.rank)
@@ -338,7 +348,29 @@ class Feature(object):
                                    device=self.rank)
         self.feature_order = torch.zeros_like(local_range)
         self.feature_order[local_order.to(self.rank)] = local_range
+    def get_device_cache_size(self, gpuid): #计算device可用于缓存热数据的空间大小
+        # Returns the maximum GPU memory occupied by tensors in bytes for a given device.
+        # Returns the maximum GPU memory managed by the caching allocator in bytes for a given device
+        peak_allocated_mem = torch.cuda.max_memory_allocated(device=gpuid)
+        peak_reserved_mem = torch.cuda.max_memory_reserved(device=gpuid)
+        total_mem = torch.cuda.get_device_properties(gpuid).total_memory
+        available = total_mem - peak_allocated_mem - peak_reserved_mem - 1024 * 1024 * 1024 * 4  # in bytes
+        # torch.cuda.reset_peak_memory_stats(device=gpuid) 重置peak值，即下一次allocated,reserved的值较小，也可以显示出来
+        mb = 1024 * 1024
+        print('total_mem:{}MB,peak_used_mem:{}MB'.format(total_mem // mb, (peak_reserved_mem + peak_allocated_mem) // mb))
+        self.device_cache_size=available
+        return available
+    def begin_compute_missrate(self):  #与get_miss_rete()配合使用，计算命中率
+        self.report=True
+        self.miss_num=0
+        self.total_num=0
 
+    def get_miss_rate(self):
+        miss_rate = float(self.miss_num) / self.total_num
+        print(f'this epoch:  total_num:{self.total_num},miss_num:{self.miss_num},miss_rate:{miss_rate:.4f},hit_rate:{(1.0-miss_rate):.4f}')
+        self.report=False
+        return miss_rate
+    
     def __getitem__(self, node_idx: torch.Tensor):
         """
         这段代码实现了一个类的方法 __getitem__，它是 Python 中一个内置的方法，用于支持类的实例对象的索引操作。在这个方法中，首先调用了一个名为 lazy_init_from_ipc_handle 的方法来确保数据已经被加载到内存中。然后将输入的 node_idx 转换为与数据存储设备相同的设备，即 self.rank 所在的设备。
@@ -358,6 +390,13 @@ class Feature(object):
         if self.mmap_handle_ is None:
             if self.feature_order is not None:
                 node_idx = self.feature_order[node_idx]
+                if self.report:
+                    self.total_num += node_idx.size()[0]
+                    temp=torch.nonzero(node_idx>self.cache_size) 
+                    self.miss_num+=temp.shape[0]
+                    #temp=node_idx>self.cache_size
+                    #self.miss_num+=sum(temp)
+                    #self.miss_num += sum(1 if i > self.cache_size else 0 for i in node_idx)
             if self.cache_policy == "device_replicate":
                 shard_tensor = self.device_tensor_list[self.rank]
                 return shard_tensor[node_idx]
