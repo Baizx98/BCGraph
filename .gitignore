@@ -14,7 +14,7 @@ generated
 
 mytest.py
 data/
-
+/profiler/data/
 # Mac
 .DS_Store
 

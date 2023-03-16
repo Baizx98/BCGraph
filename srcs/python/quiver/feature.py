@@ -243,7 +243,7 @@ class Feature(object):
         if self.cache_policy == "device_replicate":
             cache_memory_budget = parse_size(self.device_cache_size)
             shuffle_ratio = 0.0
-        else:
+        elif self.cache_policy == "p2p_clique_replicate":
             cache_memory_budget = parse_size(
                 self.device_cache_size) * len(self.topo.p2pClique2Device[0])
             shuffle_ratio = self.cal_size(
@@ -255,7 +255,7 @@ class Feature(object):
         if self.csr_topo is not None:
             if self.csr_topo.feature_order is None:
                 cpu_tensor, self.csr_topo.feature_order = reindex_feature(
-                    self.csr_topo, cpu_tensor, shuffle_ratio)
+                    self.csr_topo, cpu_tensor, shuffle_ratio)  # 对特征矩阵按热度排序
             self.feature_order = self.csr_topo.feature_order.to(self.rank)
         cache_part, self.cpu_part = self.partition(cpu_tensor,
                                                    cache_memory_budget)
