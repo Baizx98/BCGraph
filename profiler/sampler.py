@@ -18,6 +18,8 @@ dataset = Reddit(dataset_path)
 data: Data = dataset[0]
 train_idx: torch.Tensor = data.train_mask.nonzero(as_tuple=False).view(-1)
 train_idx_parallel = train_idx.split(train_idx.size(0)//2)
+print(train_idx_parallel[0][:10])
+print(train_idx_parallel[1][:10])
 
 train_loader = torch.utils.data.DataLoader(train_idx,
                                            batch_size=1024,
@@ -81,6 +83,8 @@ def get_nids_from_minibatch_parallel():
         df_list = []
         for seeds in train_loader_list[i]:
             n_id, _, _ = quiver_sampler.sample(seeds)
+            print("n_id:", n_id[:10])
+            print("len:", len(n_id))
             n_id_list = n_id.cpu().numpy().tolist()
             temp_df = pd.DataFrame([n_id_list])
             df_list.append(temp_df)
@@ -147,5 +151,82 @@ def get_feature_ids_on_two_gpus(adj_csr: quiver.CSRTopo, gpu_portion: float):
     print('='*20, 'DONE', '='*20)
 
 
+def hit_ratio_analysis_on_clique(gpu_portion: float):
+    # 读取数据
+    print("读取数据")
+    cache_ids_path = get_profiler_data_save_path(
+        'cache_ids'+'_'+str(gpu_portion*100)+'%'+'.csv')
+    batch_nids_gpu0_path = get_profiler_data_save_path('nids_gpu0.csv')
+    batch_nids_gpu1_path = get_profiler_data_save_path('nids_gpu1.csv')
+    df0 = pd.read_csv(cache_ids_path)
+    # 数据预处理
+    print("数据预处理")
+    df0.fillna(-1, inplace=True)
+    cache_ids_gpu0 = df0.iloc[0].to_list()
+    cache_ids_gpu1 = df0.iloc[1].to_list()
+    cache_ids_gpu0 = list(map(int, cache_ids_gpu0))
+    cache_ids_gpu1 = list(map(int, cache_ids_gpu1))
+    cache_ids_gpu0 = [x for x in cache_ids_gpu0 if x != -1]
+    cache_ids_gpu1 = [x for x in cache_ids_gpu1 if x != -1]
+    cache_ids_gpu0_set = set(cache_ids_gpu0)
+    print("cache_size:", len(cache_ids_gpu0_set))
+    cache_ids_gpu1_set = set(cache_ids_gpu1)
+
+    # 创建DataFrame保存分析结果
+    res_df = pd.DataFrame(
+        columns=['gpu_id', 'batch_id', 'hit_ratio_local', 'hit_ratio_clique'])
+
+    for i in range(2):
+        batch_nids_gpui_path = get_profiler_data_save_path(
+            'nids_gpu'+str(i)+'.csv')
+        df = pd.read_csv(batch_nids_gpui_path)
+        df.fillna(-1, inplace=True)
+        rnums = df.shape[0]
+        gpu_id = i  # tosheet
+        print("GPU:", gpu_id)
+        for j in range(rnums):
+            minibatch_id = j  # tosheet
+            batch_nids_gpu = df.iloc[i].to_list()
+            batch_nids_gpu = list(map(int, batch_nids_gpu))
+            batch_nids_gpu = [x for x in batch_nids_gpu if x != -1]
+            batch_nids_gpu_set = set(batch_nids_gpu)
+            batch_size = len(batch_nids_gpu_set)
+            print("batch_size:", batch_size)
+            if i == 0:
+                hit_local_count = len(cache_ids_gpu0_set & batch_nids_gpu_set)
+                print("hit_local_count", hit_local_count)
+                hit_clique_count = len(cache_ids_gpu1_set & batch_nids_gpu_set)
+            elif i == 1:
+                hit_local_count = len(cache_ids_gpu1_set & batch_nids_gpu_set)
+                hit_clique_count = len(cache_ids_gpu0_set & batch_nids_gpu_set)
+
+            else:
+                hit_local_count = -1
+                hit_local_count = -1
+            hit_local_ratio = hit_local_count / batch_size  # tosheet
+            hit_clique_ratio = hit_clique_count / batch_size  # tosheet
+            res_df.loc[i*rnums+j] = [int(gpu_id), int(minibatch_id),
+                                     round(float(hit_local_ratio), 4), round(float(hit_clique_ratio), 4)]
+    res_df['gpu_id'] = res_df['gpu_id'].astype(int)
+    res_df['batch_id'] = res_df['batch_id'].astype(int)
+    res_df['hit_ratio_clique'] = res_df['hit_ratio_clique'].apply(
+        lambda x: '{:.2%}'.format(x))
+    res_df['hit_ratio_local'] = res_df['hit_ratio_local'].apply(
+        lambda x: '{:.2%}'.format(x))
+    res_df['hit_ratio_clique'] = res_df['hit_ratio_clique'].astype(str)
+    res_df['hit_ratio_local'] = res_df['hit_ratio_local'].astype(str)
+    res_df.to_csv(get_profiler_data_save_path(
+        'hit_analysis_'+str(gpu_portion*100)+'%.csv'), index=False)
+
+
+def generate_cache_analysis(adj_csr: quiver.CSRTopo):
+    for i in range(1, 10, 1):
+        print(i/10)
+        get_feature_ids_on_two_gpus(adj_csr, i/10)
+        hit_ratio_analysis_on_clique(i/10)
+
+
 if __name__ == '__main__':
-    get_feature_ids_on_two_gpus(csr_topo, 1.0)
+    # generate_cache_analysis(csr_topo)
+    # hit_ratio_analysis_on_clique(1.0)
+    get_nids_from_minibatch_parallel()
