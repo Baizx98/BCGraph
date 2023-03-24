@@ -49,6 +49,8 @@ def get_profiler_data_save_path(file_name: str) -> str:
 
 
 def get_nids_from_minibatch():
+    """在单个GPU上采样得到的minibatch序列
+    """
     file_path = get_profiler_data_save_path('nids.csv')
     if osp.exists(file_path):
         print("每个minibatch采样得到的节点已保存至", file_path)
@@ -67,6 +69,8 @@ def get_nids_from_minibatch():
 
 
 def get_nids_from_minibatch_parallel():
+    """得到在两个GPU上分别采样到的minibatch节点序列
+    """
     file_path_gpu0 = get_profiler_data_save_path('nids_gpu0.csv')
     file_path_gpu1 = get_profiler_data_save_path('nids_gpu1.csv')
     if osp.exists(file_path_gpu0) or osp.exists(file_path_gpu1):
@@ -156,8 +160,6 @@ def hit_ratio_analysis_on_clique(gpu_portion: float):
     print("读取数据")
     cache_ids_path = get_profiler_data_save_path(
         'cache_ids'+'_'+str(gpu_portion*100)+'%'+'.csv')
-    batch_nids_gpu0_path = get_profiler_data_save_path('nids_gpu0.csv')
-    batch_nids_gpu1_path = get_profiler_data_save_path('nids_gpu1.csv')
     df0 = pd.read_csv(cache_ids_path)
     # 数据预处理
     print("数据预处理")
@@ -169,7 +171,6 @@ def hit_ratio_analysis_on_clique(gpu_portion: float):
     cache_ids_gpu0 = [x for x in cache_ids_gpu0 if x != -1]
     cache_ids_gpu1 = [x for x in cache_ids_gpu1 if x != -1]
     cache_ids_gpu0_set = set(cache_ids_gpu0)
-    print("cache_size:", len(cache_ids_gpu0_set))
     cache_ids_gpu1_set = set(cache_ids_gpu1)
 
     # 创建DataFrame保存分析结果
@@ -186,23 +187,20 @@ def hit_ratio_analysis_on_clique(gpu_portion: float):
         print("GPU:", gpu_id)
         for j in range(rnums):
             minibatch_id = j  # tosheet
-            batch_nids_gpu = df.iloc[i].to_list()
+            batch_nids_gpu = df.iloc[j].to_list()
             batch_nids_gpu = list(map(int, batch_nids_gpu))
             batch_nids_gpu = [x for x in batch_nids_gpu if x != -1]
             batch_nids_gpu_set = set(batch_nids_gpu)
             batch_size = len(batch_nids_gpu_set)
-            print("batch_size:", batch_size)
             if i == 0:
                 hit_local_count = len(cache_ids_gpu0_set & batch_nids_gpu_set)
-                print("hit_local_count", hit_local_count)
                 hit_clique_count = len(cache_ids_gpu1_set & batch_nids_gpu_set)
             elif i == 1:
                 hit_local_count = len(cache_ids_gpu1_set & batch_nids_gpu_set)
                 hit_clique_count = len(cache_ids_gpu0_set & batch_nids_gpu_set)
-
             else:
                 hit_local_count = -1
-                hit_local_count = -1
+                hit_clique_count = -1
             hit_local_ratio = hit_local_count / batch_size  # tosheet
             hit_clique_ratio = hit_clique_count / batch_size  # tosheet
             res_df.loc[i*rnums+j] = [int(gpu_id), int(minibatch_id),
@@ -227,6 +225,4 @@ def generate_cache_analysis(adj_csr: quiver.CSRTopo):
 
 
 if __name__ == '__main__':
-    # generate_cache_analysis(csr_topo)
-    # hit_ratio_analysis_on_clique(1.0)
-    get_nids_from_minibatch_parallel()
+    generate_cache_analysis(csr_topo)

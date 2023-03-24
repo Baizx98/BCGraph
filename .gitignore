@@ -15,6 +15,7 @@ generated
 mytest.py
 data/
 /profiler/data/
+/profiler/__pycache__/
 # Mac
 .DS_Store
 
