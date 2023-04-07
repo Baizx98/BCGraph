@@ -8,6 +8,7 @@
   - [CSR格式](#csr格式)
 - [开发方法](#开发方法)
   - [在Python中调用C++模块的方式](#在python中调用c模块的方式)
+  - [缓存命中率测试流程](#缓存命中率测试流程)
 
 # 代码模块说明
 
@@ -251,3 +252,14 @@ if __name__ == '__main__':
     multiprocessing.spawn(my_function, args=(,))
 ```
 在这个例子中，spawn 函数会启动 4 个进程，并在每个进程中执行 my_function 函数。args 参数为空，因为我们不需要在启动进程时指定任何其他参数。每个进程都会自动获取一个 rank 参数，它将作为 my_function 函数的第一个参数传递。my_function 函数将在每个进程中打印出 "Hello from process" 后面跟随该进程的 rank 值。
+
+## 缓存命中率测试流程
+1. 定义GPU数量
+2. 划分训练集并定义DataLoader列表
+3. 定义采样器
+4. 设定若干epoch，每个epoch中完成采样，统计节点频率，不需要模型计算
+
+- 首先进行多个epoch的采样，获取不同节点在不同GPU的热度和总热度
+- 得到节点的度排序
+- 按照某种策略将特征缓存到两个GPU上，储存在gpu_chached_ids_list中
+- 再进行若干轮epoch模拟训练，统计在gpu_cached_ids_list的命中数量，计算命中率并保存到文件中
