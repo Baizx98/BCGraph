@@ -2,7 +2,7 @@ import os
 import os.path as osp
 import time
 import logging
-from typing import List
+from typing import List, Union
 
 import torch
 from torch_geometric.datasets import Reddit
@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import matplotlib
 
 import quiver
+import tool
 
 
 class CacheProfiler:
@@ -27,6 +28,7 @@ class CacheProfiler:
         self.train_idx_parallel = None
         self.csr_topo = None
         # environment
+        self.cache_policy = None
         self.world_size = 0
         self.gpu_list = []
         self.sample_gpu = 0
@@ -51,10 +53,10 @@ class CacheProfiler:
     def __str__(self) -> str:
         return self.dataset_name
 
-    def init_config(self, dataset_name: str, gpu_list: List[int], cache_ratio: float, batch_size: int):
+    def init_config(self, dataset_name: str, gpu_list: List[int],  cache_policy: str, cache_ratio: float, batch_size: int):
         # 初始化参数
         self.dataset_name = dataset_name
-        self.dataset_path = self.get_dataset_save_path(dataset_name)
+        self.dataset_path = tool.get_dataset_save_path(dataset_name)
         self.gpu_list = gpu_list
         self.world_size = len(gpu_list)
         self.cache_ratio = cache_ratio
@@ -95,44 +97,28 @@ class CacheProfiler:
             self.cache_ratio*self.csr_topo.node_count)//self.world_size
         logging.info('config inited')
 
-    def reindex_by_degree(self):
-        # 静态缓存 度排序
-        degree = self.csr_topo.degree
-        # 按度排序后得到的节点ID列表 prev_order
-        _, prev_order = torch.sort(degree, descending=True)
-        return prev_order
-
-    def reindex_by_frequency_total(self) -> torch.Tensor:
-        # 静态缓存 预采样频率排序 全局排序
-        _, prev_order = torch.sort(
-            self.gpu_frequency_total, descending=True)
-        logging.info('reindex done')
-        return prev_order
-
-    def reindex_by_frequency_list(self):
-        # 静态缓存 预采样频率排序 多GPU分别排序
-        prev_order_list = []
-        for li in self.gpu_frequency_list:
-            _, temp = torch.sort(li, descending=True)
-            prev_order_list.append(temp)
-        logging.info('reindex done')
-        return prev_order_list
-
     def cache_nids_to_gpus(self):
         # 将不同缓存策略下得到的缓存数据保存至不同的GPU缓存列表中
+
         # 多GPU各自预采样频率排序
-        prev_order_list = self.reindex_by_frequency_list()
-        for prev_order in prev_order_list:
-            temp = prev_order[:self.block_size]
-            self.gpu_cached_ids_list.append(temp)
+        if self.cache_policy == 'frequency_separate':
+            prev_order_list = tool.reindex_nid_by_hot_metric(
+                self.gpu_frequency_list)
+            for prev_order in prev_order_list:
+                temp = prev_order[:self.block_size]
+                self.gpu_cached_ids_list.append(temp)
         logging.info('cache done')
-        return self.gpu_cached_ids_list
+        return
 
     def get_nids_all_frequency(self, epoch: int):
+        """预采样获取节点访问频率
 
-        if osp.exists(self.get_profiler_data_save_path(str(self.dataset_name)+'saved_frequency_data.pth')):
-            saved_data = torch.load(self.get_profiler_data_save_path(
-                str(self.dataset_name)+'saved_frequency_data.pth'))
+        Args:
+            epoch (int): 预采样的轮数
+        """
+        if osp.exists(tool.get_profiler_data_save_path(str(self.dataset_name)+'saved_frequency_data.pth')):
+            saved_data = torch.load(tool.get_profiler_data_save_path(
+                str(self.dataset_name)+'_saved_frequency_data.pth'))
             self.gpu_frequency_list = saved_data['gpu_frequency_list']
             self.gpu_frequency_total = saved_data['gpu_frequency_total']
             logging.info('read frequency data from file:' +
@@ -152,7 +138,7 @@ class CacheProfiler:
                 self.gpu_frequency_list.append(gpu_frequency_temp)
             saved_data = {'gpu_frequency_list': self.gpu_frequency_list,
                           'gpu_frequency_total': self.gpu_frequency_total}
-            torch.save(saved_data, self.get_profiler_data_save_path(
+            torch.save(saved_data, tool.get_profiler_data_save_path(
                 str(self.dataset_name)+'saved_frequency_data.pth'))
 
         logging.info('pre-sample done')
@@ -195,28 +181,10 @@ class CacheProfiler:
             lambda x: '{:.2%}'.format(x))
         res_df['hit_ratio_clique'] = res_df['hit_ratio_clique'].astype(str)
         res_df['hit_ratio_local'] = res_df['hit_ratio_local'].astype(str)
-        res_df.to_csv(self.get_profiler_data_save_path(
-            str(self.dataset_name)+'_frequency_hit_analysis_'+str(self.cache_ratio*100)+'%.csv', profiler_data_path='profiler/data/frequency'), index=False)
+        res_df.to_csv(tool.get_profiler_data_save_path(
+            str(self.dataset_name)+'_hit_analysis_'+str(self.cache_ratio*100)+'%.csv', profiler_data_path='profiler/data/'+self.cache_policy), index=False)
 
         logging.info('cache analysis done')
-
-    def get_dataset_save_path(self, dataset_name: str) -> str:
-        return osp.join(osp.dirname(
-            osp.realpath(__file__)), '..', 'data', dataset_name)
-
-    def get_profiler_data_save_path(self, file_name: str, profiler_data_path='profiler/data/') -> str:
-        """获取分析结果的保存路径
-
-        Args:
-            file_name (str): 文件名
-
-        Returns:
-            str: 分析结果的保存路径
-        """
-        if not osp.exists(profiler_data_path):
-            os.mkdir(profiler_data_path)
-        profiler_data_path = osp.join(profiler_data_path, file_name)
-        return profiler_data_path
 
 
 if __name__ == '__main__':
