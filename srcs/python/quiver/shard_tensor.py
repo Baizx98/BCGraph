@@ -75,7 +75,7 @@ class ShardTensor:
         self.topo = Topo(device_list)
         self.current_clique = self.topo.get_clique_id(self.current_device)
 
-    def append(self, cpu_tensor, device):
+    def append(self, cpu_tensor, device, is_dynamic_cache=False):
 
         if device == -1:
             if self.cpu_tensor is not None:
@@ -94,6 +94,11 @@ class ShardTensor:
                 f"LOG >>> Memory Budge On {device} is {self.shard_tensor_config.device_memory_budget[device] // 1024 // 1024} MB"
             )
             self.shard_tensor.append(cpu_tensor, device)
+        elif is_dynamic_cache:
+            self.shard_tensor.append(cpu_tensor, device, is_dynamic_cache)
+            print(
+                f"LOG >>>Dynamic cache Memory Budge On {device} is {cpu_tensor.numel()*cpu_tensor.element_size() // 1024 // 1024} MB"
+            )
         else:
             raise Exception(f"{device} tensor has been already appended")
 
@@ -154,9 +159,19 @@ class ShardTensor:
         result = result.to(self.current_device)
         wait_results.append((part_orders, result))
 
-    def __getitem__(self, nodes):
+    def compute_missrate(self):
+        self.shard_tensor.begin_compute_missrate()
+    def miss_rate(self):
+        self.shard_tensor.get_miss_rate()
+
+    def __getitem__(self, tp):
 
         self.init_topo()
+        nodes,dycache=tp
+        if dycache!=None and dycache.size()[0]!=0:
+            dycache=dycache.to(self.current_device)
+            self.shard_tensor.dynamic_cache(dycache)
+
         nodes = nodes.to(self.current_device)
 
         feature = self.shard_tensor[nodes]

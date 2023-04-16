@@ -59,8 +59,15 @@ class Feature(object):
 
         self.report = False
         self.cache_size = 0
-        self.miss_num = 0
+        self.dynamic_cache_size=0
+        self.hit_num = 0
         self.total_num = 0
+
+        self.feature_shape1=0
+        self.tensor_dtype=None
+        self.tensor_element_size=0
+        self.i=0
+        self.last_tensor=None
         assert self.clique_device_symmetry_check(
         ), f"\n{self.topo.info()}\nDifferent p2p clique size NOT equal"
 
@@ -89,6 +96,8 @@ class Feature(object):
         """
         element_size = cpu_tensor.shape[1] * cpu_tensor.element_size()
         cache_size = cache_memory_budget // element_size
+        self.feature_shape1=cpu_tensor.shape[1]
+        self.tensor_dtype,self.tensor_element_size=cpu_tensor.dtype,cpu_tensor.element_size()
         return cache_size
 
     def partition(self, cpu_tensor: torch.Tensor, cache_memory_budget: int):
@@ -231,7 +240,7 @@ class Feature(object):
                 shard_tensor.append(self.cpu_part, -1)
                 self.clique_tensor_list[clique_id] = shard_tensor
 
-    def from_cpu_tensor(self, cpu_tensor: torch.Tensor, norder=None):
+    def from_cpu_tensor(self, cpu_tensor: torch.Tensor, norder=None,is_dynamic_cache=False,dynamic_cache_budget=0):
         """Create quiver.Feature from a pytorh cpu float tensor
 
         函数的具体操作如下：
@@ -334,6 +343,21 @@ class Feature(object):
                 shard_tensor.append(self.cpu_part, -1)
                 self.clique_tensor_list[clique_id] = shard_tensor
 
+        #动态缓存
+        element_size=self.feature_shape1*self.tensor_element_size
+        self.dynamic_cache_size=dynamic_cache_budget//element_size
+        node_count=self.csr_topo.indptr.shape[0] - 1
+        #print(f'total_node:{node_count},self.dynamic_cache_size:{self.dynamic_cache_size}')
+        self.last_tensor=torch.zeros(node_count,dtype=torch.float)
+        if cache_part.shape[0] > 0 and is_dynamic_cache and self.dynamic_cache_size>0:
+            
+            if self.cache_policy== "device_replicate":
+                dynamic_cache_tensor=torch.zeros((self.dynamic_cache_size,self.feature_shape1),dtype=self.tensor_dtype)
+                for device in self.device_list:
+                    shard_tensor=self.device_tensor_list.get(device, None)
+                    shard_tensor.append(dynamic_cache_tensor,device,is_dynamic_cache)
+                    self.device_tensor_list[device]=shard_tensor    
+
     def set_local_order(self, local_order):
         """ Set local order array for quiver.Feature
 
@@ -362,14 +386,23 @@ class Feature(object):
         return available
     def begin_compute_missrate(self):  #与get_miss_rete()配合使用，计算命中率
         self.report=True
-        self.miss_num=0
+        self.hit_num=0
         self.total_num=0
 
+        self.i=0
+
+        #计算GPU动态缓存命中率
+        self.lazy_init_from_ipc_handle()
+        shard_tensor = self.device_tensor_list[self.rank]
+        shard_tensor.compute_missrate()
+
     def get_miss_rate(self):
-        miss_rate = float(self.miss_num) / self.total_num
-        print(f'this epoch:  total_num:{self.total_num},miss_num:{self.miss_num},miss_rate:{miss_rate:.4f},hit_rate:{(1.0-miss_rate):.4f}')
+        static_hit_rate = float(self.hit_num) / self.total_num
+        print(f'static_cache_hit:total_num:{self.total_num},static_hit_num:{self.hit_num},static_hit_rate:{(static_hit_rate):.4f}')
         self.report=False
-        return miss_rate
+        shard_tensor = self.device_tensor_list[self.rank]
+        shard_tensor.miss_rate()
+        return static_hit_rate
     
     def __getitem__(self, node_idx: torch.Tensor):
         """
@@ -385,8 +418,9 @@ class Feature(object):
         Returns:
             _type_: _description_
         """
+        self.i+=1
         self.lazy_init_from_ipc_handle()
-        node_idx = node_idx.to(self.rank)
+        
         if self.mmap_handle_ is None:
             if self.feature_order is not None:
                 node_idx = self.feature_order[node_idx]
@@ -394,12 +428,19 @@ class Feature(object):
                     self.total_num += node_idx.size()[0]
                     temp=torch.nonzero(node_idx>self.cache_size) 
                     self.miss_num+=temp.shape[0]
-                    #temp=node_idx>self.cache_size
-                    #self.miss_num+=sum(temp)
-                    #self.miss_num += sum(1 if i > self.cache_size else 0 for i in node_idx)
+            self.last_tensor[node_idx]+=self.increment
+            node_idx = node_idx.to(self.rank)                    
             if self.cache_policy == "device_replicate":
                 shard_tensor = self.device_tensor_list[self.rank]
-                return shard_tensor[node_idx]
+                second_tensor=None
+                if self.i%50==0 and self.device_cache_size!=0:
+                    second_tensor=self.last_tensor.clone()
+                    second_tensor=second_tensor[self.cache_size:]
+                    _, prev_order = torch.sort(second_tensor, descending=True)
+                    second_tensor=prev_order[:self.dynamic_cache_size]
+                    second_tensor+=self.cache_size
+                tp=(node_idx,second_tensor)
+                return shard_tensor[tp]
             else:
                 clique_id = self.topo.get_clique_id(self.rank)
                 shard_tensor = self.clique_tensor_list[clique_id]

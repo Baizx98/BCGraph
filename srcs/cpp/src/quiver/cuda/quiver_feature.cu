@@ -5,6 +5,7 @@
 #include <pybind11/numpy.h>
 #include <quiver/common.hpp>
 #include <quiver/quiver.cu.hpp>
+#include <quiver/linearprobing.cu.hpp>
 #include <quiver/shard_tensor.cu.hpp>
 #include <torch/extension.h>
 
@@ -13,6 +14,10 @@
 #include <string>
 #include <torch/csrc/utils/python_numbers.h>
 #include <unordered_map>
+
+#include <algorithm>
+#include <cmath>
+#include <vector>
 
 namespace quiver
 {
@@ -62,7 +67,10 @@ class ShardTensor
 
         offset_list_.push_back(0);
     }
-
+    ~ShardTensor()
+    {
+        cudaFree(pHashTable);
+    }
     size_t get_tensor_bytes(torch::Tensor tensor)
     {
         // assume it's float
@@ -142,7 +150,7 @@ class ShardTensor
         cudaCheckError();
     }
 
-    void append(torch::Tensor &tensor, int target_device)
+    void append(torch::Tensor &tensor, int target_device, bool is_dynamic_cache=false)
     {
         CHECK_CPU(tensor);
         // for now, we assume tensor is added ordered
@@ -168,6 +176,33 @@ class ShardTensor
             // if target_device >= 0, it means we use p2p
             // printf("LOG >>> Malloc Data On Device %d With %ulld Bytes\n",
             // target_device, data_size);
+             if(is_dynamic_cache)
+            {
+                dynamic_cache_size=tensor.sizes()[0];
+                pHashTable=create_hashtable();   //创建动态缓存哈希表
+                cudaCheckError();
+
+                cudaSetDevice(target_device); 
+                cudaMalloc(&ptr, data_size);     //申请动态缓存空间
+
+                //dynamic_dev_ptr=(char*)ptr;
+                if(cpu_tensor_beginid!=-1 && cpu_tensor_dptr!=nullptr)
+                {
+                    printf("begin fill dynamic cache--------,cpu_tensor_beginid:%d,ptr:%p    \n",cpu_tensor_beginid,cpu_tensor_dptr);
+                    cudaMemcpy(ptr,cpu_tensor_dptr,data_size,cudaMemcpyHostToDevice);
+                    std::vector<KeyValue> insert_kvs ;
+                    for(uint64_t i=0;i<dynamic_cache_size;i++)
+                    {
+                        uint64_t rand0=cpu_tensor_beginid+i;
+                        uint64_t rand1=i;
+                        insert_kvs.push_back(KeyValue{rand0,rand1});
+                    }
+                    insert_hashtable(pHashTable,insert_kvs.data(),(uint32_t)dynamic_cache_size);
+                }
+                cudaSetDevice(device_); 
+                access_book.push_back(3);
+            }
+            else{
             cudaSetDevice(target_device);
             cudaMalloc(&ptr, data_size);
             cudaMemcpy(ptr, tensor.data_ptr(), data_size,
@@ -188,6 +223,7 @@ class ShardTensor
                 // printf("%d <-> %d dont support peer access \n", device_,
                 // target_device);
             }
+            }
 
         } else {
             cudaSetDevice(device_);
@@ -195,7 +231,10 @@ class ShardTensor
             quiverRegister(tensor.data_ptr(), data_size,
                            cudaHostRegisterMapped);
             cudaHostGetDevicePointer(&ptr, (void *)tensor.data_ptr(), 0);
-            access_book.push_back(1);
+            cpu_tensor_dptr=(void*)tensor.data_ptr();
+            cpu_tensor_beginid=(int)offset_list_[offset_list_.size() - 1];
+            access_book.push_back(2);
+            //printf("append(cpu),cpu_tensor_dptr:%p\n",cpu_tensor_dptr);
             // printf("%d <-> CPU support peer access \n", device_);
         }
 
@@ -242,7 +281,69 @@ class ShardTensor
         }
         return iter->second;
     }
+    void begin_compute_missrate()
+    {
+        printf("begining---------------------------------------------------------------\n");
+        total_num=0;
+        static_get_num=0;
+        dynamic_get_num=0;
+        report=0;
+    }
+    void get_miss_rate()
+    {
+       
+        float sget_rate=(float)static_get_num/(float)total_num;
+        float dget_rate=(float)dynamic_get_num/(float)total_num;
+        if(dynamic_cache_size==0)
+        {
+            printf("static_cache_hit: total_num:%d,  static_hit_num:%d,  static_hit_rate:%.4f \n",total_num, static_get_num, sget_rate);
+        }
+        else{
+            printf("dynamic_cache_hit: total_num:%d,  dynamic_hit_num:%d,  dynamic_hit_rate:%.4f \n",total_num, dynamic_get_num, dget_rate);
+            printf("miss:  total_num:%d,  miss_num:%d,  miss_rate:%.4f ,total_hit_rate:%.4f\n",total_num, static_get_num, sget_rate,(1.0-sget_rate));
+        //printf("total:miss_rate:%.4f,  hit_rate:%.4f\n",(1.0-sget_rate-dget_rate),(sget_rate+dget_rate));
+        }
+        printf("this epoch end---------------------------------------------------------\n");
+    }
+    void dynamic_cache(torch::Tensor &indices)
+    {
+        int current_device = 0;
+        cudaGetDevice(&current_device);
+        char **buffers_device;
+        int64_t *offset_device;
+        int *access_book_device;
 
+        auto val = get_device_pointers(current_device);
+        buffers_device = std::get<0>(val);
+        offset_device = std::get<1>(val);
+        access_book_device = std::get<2>(val);
+
+        cudaMemset(pHashTable, 0xff, sizeof(KeyValue) * kHashTableCapacity);
+        int t=min(dynamic_cache_size,(int)indices.numel());
+        int hflag[t];
+        std::memset(hflag,-1,sizeof(int)*t);
+        int*dflag;
+        cudaMalloc((void **)&dflag, t*sizeof(int));
+        cudaMemcpy(dflag, hflag, t*sizeof(int), cudaMemcpyHostToDevice);
+
+        int*global_block;
+        std::memset(hflag,0,sizeof(int)*t);
+        cudaMalloc((void **) &global_block, t*sizeof(int));
+        cudaMemcpy(global_block, hflag, t*sizeof(int), cudaMemcpyHostToDevice);
+        int nblockSize = 0;
+        int nnumBlocks = 0;
+        cudaOccupancyMaxPotentialBlockSize(&nnumBlocks, &nblockSize,
+                                           tensor_gpu_hashtable_insert);
+        tensor_gpu_hashtable_insert<<<nnumBlocks,nblockSize>>>(pHashTable,indices.data_ptr<int64_t>(),t, buffers_device, offset_device, offset_list_.size(),dflag,global_block,stride_in_bytes(0));
+        cudaCheckError();
+
+        cudaFree(dflag);
+        cudaFree(global_block);
+        //an illegal memory access was encountered    删除的时候是直接把那块地址的内容都删了？？？
+        /*cudaFree(buffers_device);
+        cudaFree(offset_device);
+        cudaFree(access_book_device);*/
+    }
     torch::Tensor operator[](torch::Tensor &indices)
     {
         /*
@@ -251,6 +352,7 @@ class ShardTensor
         indice_length, const float* res, const int item_byte_size){
         torch::zeros((100,100),torch::KF32);
         */
+        ++report;
         int current_device = 0;
         cudaGetDevice(&current_device);
         auto stream = at::cuda::getCurrentCUDAStream();
@@ -287,17 +389,170 @@ class ShardTensor
 
         int blockSize = 0;
         int numBlocks = 0;
-        cudaOccupancyMaxPotentialBlockSize(&numBlocks, &blockSize,
-                                           quiver_tensor_gather);
+        
         // std::cout<<"LOG >>> "<<" numBlocks "<< numBlocks <<" blockSize
         // "<<blockSize<<std::endl;
         int ignore_access_book = 0;
         if (current_device != device_) { ignore_access_book = 1; }
-        quiver_tensor_gather<<<numBlocks, blockSize, 0, stream>>>(
-            buffers_device, offset_device, offset_list_.size(),
-            indices.data_ptr<int64_t>(), indices.numel(), (char*)res.data_ptr(),
-            stride_in_bytes(0), access_book_device, ignore_access_book);
-        cudaCheckError();
+
+        if(dynamic_cache_size==0){
+            cudaOccupancyMaxPotentialBlockSize(&numBlocks, &blockSize,
+                                           quiver_tensor_gather_static);
+            const int t=indices.sizes()[0];
+            int hflag[t];
+            std::memset(hflag,-1,sizeof(int)*t);
+            int*dflag;
+            cudaMalloc((void **)&dflag, t*sizeof(int));
+            cudaMemcpy(dflag, hflag, t*sizeof(int), cudaMemcpyHostToDevice);
+
+            int*global_block;
+            int* minibatch;
+            std::memset(hflag,0,sizeof(int)*t);
+            cudaMalloc((void **) &global_block, t*sizeof(int));
+            cudaMemcpy(global_block, hflag, t*sizeof(int), cudaMemcpyHostToDevice);
+            cudaMalloc((void **) &minibatch, t*sizeof(int));
+            cudaMemcpy(minibatch, hflag, t*sizeof(int), cudaMemcpyHostToDevice);
+        
+            /*int*static_get_rate;
+            int state=0;
+            cudaMalloc((void **)&static_get_rate,
+                       sizeof(int));
+            cudaMemcpy(static_get_rate, &state,
+                       sizeof(int),cudaMemcpyHostToDevice);*/
+            quiver_tensor_gather_static<<<numBlocks, blockSize, 0, stream>>>(
+                buffers_device, offset_device, offset_list_.size(),
+                indices.data_ptr<int64_t>(), indices.numel(), (char*)res.data_ptr(),
+                stride_in_bytes(0), access_book_device, ignore_access_book,minibatch, dflag, global_block);
+            cudaCheckError();
+            
+            cudaMemcpy(hflag,minibatch,sizeof(int)*t,cudaMemcpyDeviceToHost);
+            total_num+=indices.sizes()[0];
+            for(auto x:hflag)
+            {
+                static_get_num+=x;
+            }
+            //static_get_num+=accumulate(hflag,hflag+t,0);
+            //cudaFree(static_get_rate);
+            cudaFree(dflag);
+            cudaFree(global_block);
+            cudaFree(minibatch);
+        }
+        else if(dynamic_cache_size!=0){
+            cudaOccupancyMaxPotentialBlockSize(&numBlocks, &blockSize,
+                                           quiver_tensor_gather);
+            const int t=indices.sizes()[0];
+            int hflag[t];
+            std::memset(hflag,-1,sizeof(int)*t);
+            int*dflag;
+            cudaMalloc((void **)&dflag, t*sizeof(int));
+            cudaMemcpy(dflag, hflag, t*sizeof(int), cudaMemcpyHostToDevice);
+
+            int*global_block;
+            int* dynamic_minibatch;
+            std::memset(hflag,0,sizeof(int)*t);
+            cudaMalloc((void **) &global_block, t*sizeof(int));
+            cudaMemcpy(global_block, hflag, t*sizeof(int), cudaMemcpyHostToDevice);
+            cudaMalloc((void **) &dynamic_minibatch, t*sizeof(int));
+            cudaMemcpy(dynamic_minibatch, hflag, t*sizeof(int), cudaMemcpyHostToDevice);
+
+            int* static_minibatch;
+            cudaMalloc((void **) &static_minibatch, t*sizeof(int));
+            cudaMemcpy(static_minibatch, hflag, t*sizeof(int), cudaMemcpyHostToDevice);
+
+          
+            quiver_tensor_gather<<<numBlocks, blockSize, 0, stream>>>(
+                buffers_device, offset_device, offset_list_.size(),
+                indices.data_ptr<int64_t>(), indices.numel(), (char*)res.data_ptr(),
+                stride_in_bytes(0), access_book_device, ignore_access_book,
+                dynamic_cache_size, pHashTable,dynamic_minibatch, dflag, global_block,static_minibatch);
+
+            cudaCheckError();
+            cudaDeviceSynchronize();
+            if(report%2){
+                cudaMemcpy(hflag,static_minibatch,sizeof(int)*t,cudaMemcpyDeviceToHost);
+                total_num+=t;
+                int tsnum=0;
+                for(auto x:hflag)tsnum+=x;
+                static_get_num+=tsnum;
+
+                int tflag[t];
+                std::memset(tflag,0,sizeof(int)*t);
+                cudaMemcpy(tflag,dynamic_minibatch,sizeof(int)*t,cudaMemcpyDeviceToHost);
+                int tnum=0;
+                for(auto x:tflag)tnum+=x;
+                dynamic_get_num+=tnum;
+            }
+            //std::vector<KeyValue> oldkvs = iterate_hashtable(pHashTable);
+            //printf("minibatch_ids:%d ,miss_num:%d, dynamic_hit_num:%d , phashtable_entrys:%d,dynamic_cache_size:%d\n",t,tsnum,tnum,(int)oldkvs.size(),dynamic_cache_size);
+            
+            cudaFree(dflag);
+            cudaFree(global_block);
+            cudaFree(dynamic_minibatch);
+            cudaFree(static_minibatch);
+
+
+            //实时更新动态缓存的内容
+            /*std::vector<KeyValue> kvs = iterate_hashtable(ptable);
+            int exchange_begin=max(0,dynamic_cache_size-(int)kvs.size());
+            int insertnum=min(dynamic_cache_size,(int)kvs.size());
+            int array[insertnum];
+            std::vector<KeyValue> insert_kvs ;
+            if((int)kvs.size()<dynamic_cache_size)
+            {
+                partern_erase_hashtable(pHashTable,(uint64_t)exchange_begin);
+                //从res的array[i]位置拿到数据，移动到dynamic_cache的rand1位置
+                for(uint64_t i=0;i<(uint64_t)kvs.size();i++)
+                {
+                    array[i]=kvs[i].key;
+                    uint64_t rand0=kvs[i].value;
+                    uint64_t rand1=i+(uint64_t)exchange_begin;
+                    insert_kvs.push_back(KeyValue{rand0,rand1});
+                }
+            }
+            else
+            {
+                cudaMemset(pHashTable, 0xff, sizeof(KeyValue) * kHashTableCapacity);
+                for(uint64_t i=0;i<insertnum;i++)
+                {
+                    array[i]=kvs[i].key;
+                    uint64_t rand0 =kvs[i].value;
+                    uint64_t rand1 = i;
+                    //printf("get key:%u,  value:%u\n",rand0,rand1);
+                    insert_kvs.push_back(KeyValue{rand0,rand1});
+                }   
+            }
+           // printf("ptable size:%d, need insert entrys:%d is==up miss num?   exchange_begin:%d\n",(int)kvs.size(),(int)insert_kvs.size(),exchange_begin);
+            insert_hashtable(pHashTable,insert_kvs.data(),(uint32_t)insertnum);
+            
+            int*dinsertnum;
+            cudaMalloc((void**)&dinsertnum,sizeof(int));
+            cudaMemcpy(dinsertnum,&insertnum,sizeof(int),cudaMemcpyHostToDevice);
+
+            int*darray;
+            cudaMalloc((void **)&darray,
+                    sizeof(int) * insertnum);
+            cudaMemcpy(darray, &array[0],
+                    sizeof(int) * insertnum,
+                    cudaMemcpyHostToDevice);
+            int*dexchange_begin;
+            cudaMalloc((void **)&dexchange_begin,
+                    sizeof(int));
+            cudaMemcpy(dexchange_begin, &exchange_begin,
+                    sizeof(int) ,
+                    cudaMemcpyHostToDevice);
+            cudaCheckError();
+            int nblockSize = 0;
+            int nnumBlocks = 0;
+            cudaOccupancyMaxPotentialBlockSize(&nnumBlocks, &nblockSize,
+                                           res_to_dynamic_gather);
+            res_to_dynamic_gather<<<nnumBlocks,nblockSize>>>(buffers_device,offset_list_.size(),(char*)res.data_ptr(),darray,dinsertnum,stride_in_bytes(0),dexchange_begin);
+            cudaCheckError();
+
+            cudaFree(darray);
+            cudaFree(ptable);
+            cudaFree(dinsertnum);
+            cudaFree(dexchange_begin);*/
+        }
         return res;
     }
 
@@ -373,6 +628,18 @@ class ShardTensor
     int device_count_;
     bool inited_;
     int element_size;
+
+    int64_t cpu_tensor_beginid=-1;
+    void* cpu_tensor_dptr=nullptr;
+    char* dynamic_dev_ptr=nullptr;
+    
+    KeyValue* pHashTable;
+    int dynamic_cache_size=0;
+
+    int total_num=0;
+    int static_get_num=0;
+    int dynamic_get_num=0;
+    int report=0;
 };
 
 void init_p2p(std::vector<int> devices)
@@ -459,6 +726,14 @@ void register_cuda_quiver_feature(pybind11::module &m)
         .def("size", &quiver::ShardTensor::size,
              py::call_guard<py::gil_scoped_release>())
         .def("device_count", &quiver::ShardTensor::device_count,
+             py::call_guard<py::gil_scoped_release>())
+        .def("begin_compute_missrate", &quiver::ShardTensor::begin_compute_missrate,
+             py::call_guard<py::gil_scoped_release>())
+        .def("get_miss_rate", &quiver::ShardTensor::get_miss_rate,
+             py::call_guard<py::gil_scoped_release>())
+        .def("dynamic_cache",
+             py::overload_cast<torch::Tensor &>(
+                 &quiver::ShardTensor::dynamic_cache),
              py::call_guard<py::gil_scoped_release>())
         .def("append",
              py::overload_cast<torch::Tensor &, int>(

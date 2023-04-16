@@ -17,7 +17,8 @@ import quiver
 from quiver.pyg import GraphSageSampler
 print("begin")
 #root = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'products')
-root = "data/products/"
+
+root = "/data/wyj/products/"
 dataset = PygNodePropPredDataset('ogbn-products', root)
 print("datasaet prepared")
 split_idx = dataset.get_idx_split()
@@ -117,18 +118,20 @@ model = model.to(device)
 ####################
 # x = data.x.to(device)
 
-x = quiver.Feature(rank=0, device_list=[
-                   0], device_cache_size="4G", cache_policy="device_replicate", csr_topo=csr_topo)
+cache_ratio=data.x.numel()*4*0.1
+x = quiver.Feature(rank=0, device_list=[0], device_cache_size=cache_ratio, cache_policy="device_replicate", csr_topo=csr_topo)
 feature = torch.zeros(data.x.shape)
 feature[:] = data.x
-x.from_cpu_tensor(feature)
-
+dynamic_cache_size=data.x.numel()*4*0.1
+#x.from_cpu_tensor(feature,norder)
+x.from_cpu_tensor(feature,None,True,dynamic_cache_size)
 y = data.y.squeeze().to(device)
 
 
 def train(epoch):
     model.train()
 
+    x.begin_compute_missrate()
     pbar = tqdm(total=train_idx.size(0))
     pbar.set_description(f'Epoch {epoch:02d}')
 
@@ -157,7 +160,7 @@ def train(epoch):
 
     loss = total_loss / len(train_loader)
     approx_acc = total_correct / train_idx.size(0)
-
+    x.get_miss_rate()
     return loss, approx_acc
 
 
