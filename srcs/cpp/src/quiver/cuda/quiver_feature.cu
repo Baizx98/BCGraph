@@ -736,7 +736,7 @@ void register_cuda_quiver_feature(pybind11::module &m)
                  &quiver::ShardTensor::dynamic_cache),
              py::call_guard<py::gil_scoped_release>())
         .def("append",
-             py::overload_cast<torch::Tensor &, int>(
+             py::overload_cast<torch::Tensor &, int, bool>(
                  &quiver::ShardTensor::append),
              py::call_guard<py::gil_scoped_release>())
         .def("append",

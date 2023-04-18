@@ -345,18 +345,20 @@ class Feature(object):
 
         #动态缓存
         element_size=self.feature_shape1*self.tensor_element_size
-        self.dynamic_cache_size=dynamic_cache_budget//element_size
+        dynamic_cache_size=dynamic_cache_budget//element_size
+        self.dynamic_cache_size=dynamic_cache_size
         node_count=self.csr_topo.indptr.shape[0] - 1
-        #print(f'total_node:{node_count},self.dynamic_cache_size:{self.dynamic_cache_size}')
+        print(f'total_node:{node_count},self.dynamic_cache_size:{self.dynamic_cache_size}')
         self.last_tensor=torch.zeros(node_count,dtype=torch.float)
-        if cache_part.shape[0] > 0 and is_dynamic_cache and self.dynamic_cache_size>0:
+        
+        if cache_part.shape[0] > 0 and is_dynamic_cache and dynamic_cache_size>0:
             
             if self.cache_policy== "device_replicate":
-                dynamic_cache_tensor=torch.zeros((self.dynamic_cache_size,self.feature_shape1),dtype=self.tensor_dtype)
+                dynamic_cache_tensor=torch.zeros((int(dynamic_cache_size),int(self.feature_shape1)),dtype=self.tensor_dtype)
                 for device in self.device_list:
                     shard_tensor=self.device_tensor_list.get(device, None)
                     shard_tensor.append(dynamic_cache_tensor,device,is_dynamic_cache)
-                    self.device_tensor_list[device]=shard_tensor    
+                    self.device_tensor_list[device]=shard_tensor   
 
     def set_local_order(self, local_order):
         """ Set local order array for quiver.Feature
@@ -426,18 +428,20 @@ class Feature(object):
                 node_idx = self.feature_order[node_idx]
                 if self.report:
                     self.total_num += node_idx.size()[0]
-                    temp=torch.nonzero(node_idx>self.cache_size) 
-                    self.miss_num+=temp.shape[0]
-            self.last_tensor[node_idx]+=self.increment
+                    temp=torch.nonzero(node_idx<self.cache_size) 
+                    self.hit_num+=temp.shape[0]
+            
+            self.last_tensor[node_idx]+=1
             node_idx = node_idx.to(self.rank)                    
             if self.cache_policy == "device_replicate":
                 shard_tensor = self.device_tensor_list[self.rank]
                 second_tensor=None
-                if self.i%50==0 and self.device_cache_size!=0:
+                if self.i%20==0 and int(self.dynamic_cache_size)!=0:
+                    #print('success')
                     second_tensor=self.last_tensor.clone()
                     second_tensor=second_tensor[self.cache_size:]
                     _, prev_order = torch.sort(second_tensor, descending=True)
-                    second_tensor=prev_order[:self.dynamic_cache_size]
+                    second_tensor=prev_order[:int(self.dynamic_cache_size)]
                     second_tensor+=self.cache_size
                 tp=(node_idx,second_tensor)
                 return shard_tensor[tp]

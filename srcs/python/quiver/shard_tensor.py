@@ -81,7 +81,7 @@ class ShardTensor:
             if self.cpu_tensor is not None:
                 raise Exception("cpu tensor has been already appended")
             self.cpu_tensor = cpu_tensor
-            self.shard_tensor.append(cpu_tensor, -1)
+            self.shard_tensor.append(cpu_tensor, -1, 0)
             return
         if self.shard_tensor_config.device_memory_budget.get(device,
                                                              None) is None:
@@ -93,7 +93,7 @@ class ShardTensor:
             print(
                 f"LOG >>> Memory Budge On {device} is {self.shard_tensor_config.device_memory_budget[device] // 1024 // 1024} MB"
             )
-            self.shard_tensor.append(cpu_tensor, device)
+            self.shard_tensor.append(cpu_tensor, device, 0)
         elif is_dynamic_cache:
             self.shard_tensor.append(cpu_tensor, device, is_dynamic_cache)
             print(
