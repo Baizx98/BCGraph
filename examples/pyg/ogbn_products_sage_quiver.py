@@ -190,7 +190,7 @@ def test():
 
 
 test_accs = []
-for run in range(1, 11):
+for run in range(1, 2):
     print('')
     print(f'Run {run:02d}:')
     print('')
@@ -199,13 +199,13 @@ for run in range(1, 11):
     optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
 
     best_val_acc = final_test_acc = 0
-    for epoch in range(1, 21):
+    for epoch in range(1, 3):
         epoch_start = time.time()
         loss, acc = train(epoch)
         print(
             f'Epoch {epoch:02d}, Loss: {loss:.4f}, Approx. Train: {acc:.4f}, Epoch Time: {time.time() - epoch_start}')
 
-        if epoch > 5:
+        '''if epoch > 5:
             train_acc, val_acc, test_acc = test()
             print(f'Train: {train_acc:.4f}, Val: {val_acc:.4f}, '
                   f'Test: {test_acc:.4f}')
@@ -217,4 +217,4 @@ for run in range(1, 11):
 
 test_acc = torch.tensor(test_accs)
 print('============================')
-print(f'Final Test: {test_acc.mean():.4f} ± {test_acc.std():.4f}')
+print(f'Final Test: {test_acc.mean():.4f} ± {test_acc.std():.4f}')'''
