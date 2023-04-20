@@ -1,17 +1,12 @@
+print("tools")
 import os
 import os.path as osp
 import time
-import logging
 from typing import List, Union
 
 import torch
-from torch_geometric.datasets import Reddit
-from torch_geometric.data import Data
-from ogb.nodeproppred import PygNodePropPredDataset
 
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib
+print("tools11")
 
 
 def reindex_nid_by_hot_metric(
@@ -26,15 +21,15 @@ def reindex_nid_by_hot_metric(
             _, temp = torch.sort(li, descending=True)
             prev_order_list.append(temp)
         return prev_order_list
-    logging.info("reindex done")
+    # logging.info("reindex done")
 
 
-def get_dataset_save_path(dataset_name: str) -> str:
-    return osp.join(osp.dirname(osp.realpath(__file__)), "..", "data", dataset_name)
+def get_dataset_save_path(dataset_name: str = "") -> str:
+    return osp.join("/home8t/bzx", "data", dataset_name)
 
 
 def get_profiler_data_save_path(
-    file_name: str, profiler_data_path="profiler/data/"
+    file_name: str, item="", profiler_data_path="profiler/data/"
 ) -> str:
     """获取分析结果的保存路径
     Args:
@@ -42,7 +37,11 @@ def get_profiler_data_save_path(
     Returns:
         str: 分析结果的保存路径
     """
-    if not osp.exists(profiler_data_path):
-        os.mkdir(profiler_data_path)
-    profiler_data_path = osp.join(profiler_data_path, file_name)
+    if not osp.exists(profiler_data_path + item):
+        os.mkdir(profiler_data_path + item)
+    profiler_data_path = osp.join(profiler_data_path, item, file_name)
     return profiler_data_path
+
+
+if __name__ == "__main__":
+    print(get_dataset_save_path())
