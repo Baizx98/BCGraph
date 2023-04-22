@@ -12,21 +12,22 @@ import quiver
 def bench_on_ogbproduct():
     print("=" * 20 + "OGBn-Product" + "=" * 20)
     root = "/data/data/products"
-    dataset = PygNodePropPredDataset('ogbn-products', root)
+    dataset = PygNodePropPredDataset("ogbn-products", root)
     train_idx = dataset.get_idx_split()["train"]
-    train_loader = torch.utils.data.DataLoader(train_idx,
-                                               batch_size=1024,
-                                               pin_memory=True,
-                                               shuffle=True)
+    train_loader = torch.utils.data.DataLoader(
+        train_idx, batch_size=1024, pin_memory=True, shuffle=True
+    )
     csr_topo = quiver.CSRTopo(dataset[0].edge_index)
-    quiver_sampler = quiver.pyg.GraphSageSampler(csr_topo, [15, 10, 5],
-                                                 device=0,
-                                                 mode="UVA")
-    quiver_feature = quiver.Feature(rank=0,
-                                    device_list=[0, 1],
-                                    device_cache_size="200M",
-                                    cache_policy="device_replicate",
-                                    csr_topo=csr_topo)
+    quiver_sampler = quiver.pyg.GraphSageSampler(
+        csr_topo, [15, 10, 5], device=0, mode="UVA"
+    )
+    quiver_feature = quiver.Feature(
+        rank=0,
+        device_list=[0, 1],
+        device_cache_size="200M",
+        cache_policy="device_replicate",
+        csr_topo=csr_topo,
+    )
     feature = torch.zeros(dataset[0].x.shape)
     feature[:] = dataset[0].x
     quiver_feature.from_cpu_tensor(feature)
@@ -49,14 +50,16 @@ def bench_on_ogbproduct():
 def bench_on_ogbproduct_cpu():
     print("=" * 20 + "OGBn-Product CPU" + "=" * 20)
     root = "/data/data/products"
-    dataset = PygNodePropPredDataset('ogbn-products', root)
+    dataset = PygNodePropPredDataset("ogbn-products", root)
     feature = dataset[0].x
     train_idx = dataset.get_idx_split()["train"]
-    train_loader = NeighborSampler(dataset[0].edge_index,
-                                   node_idx=train_idx,
-                                   sizes=[15, 10, 5],
-                                   batch_size=1024,
-                                   shuffle=True)
+    train_loader = NeighborSampler(
+        dataset[0].edge_index,
+        node_idx=train_idx,
+        sizes=[15, 10, 5],
+        batch_size=1024,
+        shuffle=True,
+    )
     accessed_feature_size = 0
     feature_time = 0
     for batch_size, n_id, adjs in train_loader:
@@ -73,22 +76,23 @@ def bench_on_ogbproduct_cpu():
 
 def bench_on_reddit():
     print("=" * 20 + "Reddit" + "=" * 20)
-    dataset = Reddit('/data/data/Reddit')
+    dataset = Reddit("/data/data/Reddit")
     train_mask = dataset[0].train_mask
     train_idx = train_mask.nonzero(as_tuple=False).view(-1)
-    train_loader = torch.utils.data.DataLoader(train_idx,
-                                               batch_size=1024,
-                                               pin_memory=True,
-                                               shuffle=True)
+    train_loader = torch.utils.data.DataLoader(
+        train_idx, batch_size=1024, pin_memory=True, shuffle=True
+    )
     csr_topo = quiver.CSRTopo(dataset[0].edge_index)
-    quiver_sampler = quiver.pyg.GraphSageSampler(csr_topo, [25, 10],
-                                                 device=0,
-                                                 mode="UVA")
-    quiver_feature = quiver.Feature(rank=0,
-                                    device_list=[0, 1],
-                                    device_cache_size="110M",
-                                    cache_policy="device_replicate",
-                                    csr_topo=csr_topo)
+    quiver_sampler = quiver.pyg.GraphSageSampler(
+        csr_topo, [25, 10], device=0, mode="UVA"
+    )
+    quiver_feature = quiver.Feature(
+        rank=0,
+        device_list=[0, 1],
+        device_cache_size="110M",
+        cache_policy="device_replicate",
+        csr_topo=csr_topo,
+    )
     quiver_feature.from_cpu_tensor(dataset[0].x)
     accessed_feature_size = 0
     feature_time = 0
@@ -108,16 +112,18 @@ def bench_on_reddit():
 
 def bench_on_reddit_cpu():
     print("=" * 20 + "Reddit CPU" + "=" * 20)
-    root = '/data/data/Reddit'
+    root = "/data/data/Reddit"
     dataset = Reddit(root)
     feature = dataset[0].x
     train_mask = dataset[0].train_mask
     train_idx = train_mask.nonzero(as_tuple=False).view(-1)
-    train_loader = NeighborSampler(dataset[0].edge_index,
-                                   node_idx=train_idx,
-                                   sizes=[25, 10],
-                                   batch_size=1024,
-                                   shuffle=True)
+    train_loader = NeighborSampler(
+        dataset[0].edge_index,
+        node_idx=train_idx,
+        sizes=[25, 10],
+        batch_size=1024,
+        shuffle=True,
+    )
     accessed_feature_size = 0
     feature_time = 0
     for batch_size, n_id, adjs in train_loader:
@@ -134,7 +140,7 @@ def bench_on_reddit_cpu():
 
 if __name__ == "__main__":
     quiver.init_p2p([0, 1])
-    #bench_on_ogbproduct()
-    #bench_on_ogbproduct_cpu()
-    bench_on_reddit()
-    #bench_on_reddit_cpu()
+    # bench_on_ogbproduct()
+    bench_on_ogbproduct_cpu()
+    # bench_on_reddit()
+    # bench_on_reddit_cpu()
