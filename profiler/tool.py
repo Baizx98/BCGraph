@@ -1,12 +1,8 @@
-print("tools")
 import os
 import os.path as osp
-import time
 from typing import List, Union
 
 import torch
-
-print("tools11")
 
 
 def reindex_nid_by_hot_metric(
