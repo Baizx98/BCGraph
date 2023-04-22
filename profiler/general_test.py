@@ -2,6 +2,7 @@ import os
 import os.path as osp
 import time
 import logging
+from abc import ABC, abstractclassmethod
 
 import torch
 from torch_geometric.datasets import Reddit
@@ -27,20 +28,29 @@ class CacheProfiler:
         self.train_idx_parallel = None
         self.csr_topo = None
         # environment
-        self.cache_policy = None
         self.world_size = 0
         self.gpu_list = []
         self.sample_gpu = 0
-        self.cache_ratio = 0.5
         self.batch_size = 1024
-        self.block_size = 0
         # analysis
         self.quiver_sample = None
+        self.dataloader = None
         self.dataloader_list = []
         self.sample_nums_list = []
         self.gpu_frequency_list = []
         self.gpu_frequency_total: torch.Tensor = None
         self.gpu_cached_ids_list: list[torch.Tensor] = []
+
+        # cache
+        self.static_cache_ratio = 0.5
+        self.dynamic_cache_ratio = 0.2
+        # static cache
+        self.static_cache_policy = None
+        self.block_size = 0
+        # dynamic cache
+        self.dynamic_cache = None
+        self.dynamic_cache_policy = None
+        self.dynamic_cache_capacity = 0
 
         # log
         logging.basicConfig(
@@ -59,16 +69,20 @@ class CacheProfiler:
         self,
         dataset_name: str,
         gpu_list: list[int],
-        cache_policy: str,
-        cache_ratio: float,
-        batch_size: int,
+        sample_gpu: int = 0,
+        static_cache_policy: str = "",
+        dynamic_cache_policy: str = "",
+        static_cache_ratio: float = 0.0,
+        dynamic_cache_ratio: float = 0.0,
+        batch_size: int = 1024,
     ):
         # 初始化参数
         self.dataset_name = dataset_name
         self.dataset_path = tool.get_dataset_save_path()
         self.gpu_list = gpu_list
         self.world_size = len(gpu_list)
-        self.cache_ratio = cache_ratio
+        self.static_cache_ratio = static_cache_ratio
+        self.dynamic_cache_ratio = dynamic_cache_ratio
         self.batch_size = batch_size
 
         # 初始化数据集
@@ -89,6 +103,12 @@ class CacheProfiler:
             self.train_idx.size(0) // self.world_size
         )
         # 初始化DataLoader
+        self.dataloader = torch.utils.data.DataLoader(
+            self.train_idx,
+            batch_size=self.batch_size,
+            shuffle=True,
+            drop_last=True,
+        )
         for i in range(self.world_size):
             train_loader_temp = torch.utils.data.DataLoader(
                 self.train_idx_parallel[i],
@@ -100,34 +120,44 @@ class CacheProfiler:
         # 初始化图拓扑结构
         self.csr_topo = quiver.CSRTopo(self.data.edge_index)
         # 初始化采样器
+        self.sample_gpu = sample_gpu
         self.quiver_sample = quiver.pyg.GraphSageSampler(
             self.csr_topo, sizes=[25, 10], device=self.sample_gpu, mode="GPU"
         )
 
         # 初始化缓存策略
-        self.cache_policy = cache_policy
+        self.static_cache_policy = static_cache_policy
+        self.dynamic_cache_policy = dynamic_cache_policy
+        self.dynamic_cache_capacity = int(
+            self.csr_topo.node_count * dynamic_cache_ratio
+        )
+        logging.info("dy capacity:" + str(self.dynamic_cache_capacity))
+
+        if dynamic_cache_policy == "FIFO":
+            logging.info("初始化FIFO")
+            self.dynamic_cache = FIFOCache(self.dynamic_cache_capacity)
 
         # 初始化预采样全局频率统计
         self.gpu_frequency_total = torch.zeros(self.csr_topo.node_count, dtype=int)
 
         self.block_size = (
-            int(self.cache_ratio * self.csr_topo.node_count) // self.world_size
+            int(self.static_cache_ratio * self.csr_topo.node_count) // self.world_size
         )
         logging.info("config inited")
 
     def cache_nids_to_gpus(self):
-        # 将不同缓存策略下得到的缓存数据保存至不同的GPU缓存列表中
+        # 静态缓存 将不同缓存策略下得到的缓存数据保存至不同的GPU缓存列表中
 
         # 多GPU各自预采样频率排序
-        if self.cache_policy == "frequency_separate":
+        if self.static_cache_policy == "frequency_separate":
             prev_order_list = tool.reindex_nid_by_hot_metric(self.gpu_frequency_list)
             for prev_order in prev_order_list:
                 temp = prev_order[: self.block_size]
                 self.gpu_cached_ids_list.append(temp)
         logging.info("cache done")
-        if self.cache_policy == "degree":
+        if self.static_cache_policy == "degree":
             ...
-        if self.cache_policy == "batch_replace":
+        if self.static_cache_policy == "batch_replace":
             ...
         return
 
@@ -235,9 +265,9 @@ class CacheProfiler:
                 + "_hit_analysis_"
                 + str(self.batch_size)
                 + "_"
-                + str(self.cache_ratio * 100)
+                + str(self.static_cache_ratio * 100)
                 + "%.csv",
-                profiler_data_path="profiler/data/" + self.cache_policy,
+                profiler_data_path="profiler/data/" + self.static_cache_policy,
             ),
             index=False,
         )
@@ -324,7 +354,7 @@ class CacheProfiler:
                 + "_batch_analysis_"
                 + str(self.batch_size)
                 + "_"
-                + str(self.cache_ratio * 100)
+                + str(self.static_cache_ratio * 100)
                 + "%.csv",
                 profiler_data_path="profiler/data/" + "batch",
             ),
@@ -332,10 +362,59 @@ class CacheProfiler:
         )
         logging.info("batch repetiton analysis done")
 
+    def fifo_cache_hit_ratio_analysis_on_single(self):
+        hit_count = 0
+        access_count = 0
+        logging.info(self.dataset_name + " begin test")
+        for mini_batch in self.dataloader:
+            n_id, _, _ = self.quiver_sample.sample(mini_batch)
+            access_count += len(n_id)
+            for id in n_id:
+                id = int(id.tolist())
+                if self.dynamic_cache.get(id) == -1:  # 未命中
+                    self.dynamic_cache.put(id, 1)
+                else:  # 命中
+                    hit_count += 1
+        hit_ratio = hit_count / access_count
+        # 数据集、动态缓存比例、batch size
+        return hit_ratio
+
 
 class CacheModel:
-    def __init__(self) -> None:
-        ...
+    def __init__(self, capacity) -> None:
+        self.capacity = capacity
+        self.cache = {}
+
+    @abstractclassmethod
+    def get(id):
+        pass
+
+    @abstractclassmethod
+    def put(self, id, feat):
+        pass
+
+
+class FIFOCache(CacheModel):
+    def __init__(self, capacity) -> None:
+        super.__init__(capacity)
+        self.list = []
+
+    def get(self, nid):
+        if nid in self.cache:
+            return self.cache[nid]
+        else:
+            return -1
+
+    def put(self, nid: int, feature):
+        # 模拟阶段，所有节点特征用1来表示
+        if nid in self.cache:
+            self.cache[nid] = feature
+        else:
+            if len(self.list) == self.capacity:
+                oldest_nid = self.list.pop(0)
+                self.cache.pop(oldest_nid)
+            self.list.append(nid)
+            self.cache[nid] = feature
 
 
 if __name__ == "__main__":
@@ -343,10 +422,10 @@ if __name__ == "__main__":
     for i in range(10):
         cache_temp = CacheProfiler()
         cache_temp.init_config(
-            dataset_name="Reddit",
+            dataset_name="ogbn-products",
             gpu_list=[0, 1],
-            cache_policy="frequency_separate",
-            cache_ratio=(i + 1) / 10,
+            static_cache_policy="frequency_separate",
+            static_cache_ratio=(i + 1) / 10,
             batch_size=1024,
         )
         cache_temp.get_nids_all_frequency(20)

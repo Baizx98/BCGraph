@@ -1,18 +1,18 @@
-import os
-
-import seaborn as sns
+from ogb.nodeproppred import PygNodePropPredDataset
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from torch_geometric.datasets import Reddit
+import seaborn as sns
+import multiprocessing as mp
 
 import tool
+from general_test import CacheProfiler, FIFOCache
 from quiver import CSRTopo
 
 
 class GraphConfig:
-    img_save_path = "/profiler/data/img/"
+    img_save_path = "profiler/data/img/"
 
     def __init__(self) -> None:
         pass
@@ -31,17 +31,21 @@ def degree_distribution():
     order_degree = order_degree.numpy()
     df = pd.DataFrame({"values": order_degree})
 
-    #    使用 Seaborn 绘制直方图
+    # 使用 Seaborn 绘制直方图
     histogram = sns.histplot(data=df, x="values", bins=30000)
 
     # 显示直方图
     histogram.set(title="Histogram of Tensor data")
-    plt.savefig("profiler/data/" + "img/" + "degree_distribution_Reddit" + ".png")
+    plt.savefig(GraphConfig.img_save_path + "degree_distribution_Reddit" + ".png")
 
 
-def degree_percent_distribution():
-    print("begin")
-    dataset = Reddit(tool.get_dataset_save_path("Reddit"))
+def degree_percent_distribution(dataset_name: str):
+    print("beginnnn")
+    if dataset_name == "Reddit":
+        dataset = Reddit(tool.get_dataset_save_path(dataset_name))
+    if dataset_name[:4] == "ogbn":
+        print(tool.get_dataset_save_path())
+        dataset = PygNodePropPredDataset(dataset_name, tool.get_dataset_save_path())
     data = dataset[0]
     csr_topo = CSRTopo(data.edge_index)
     degree = csr_topo.degree
@@ -50,27 +54,94 @@ def degree_percent_distribution():
     # 计算tensor总和
     total_sum = torch.sum(degree_sorted)
     # 计算占比的列表，包含每个位置的横坐标和纵坐标的值
+    print("begin cal")
     x_values: torch.Tensor = (
         torch.arange(degree_sorted.shape[0]) / degree_sorted.shape[0]
     )
     y_values: torch.Tensor = torch.cumsum(degree_sorted, dim=0) / total_sum
     x = x_values.numpy()
     y = y_values.numpy()
+    xx = x[::1000]
+    yy = y[::1000]
 
     print("begin draw")
     # 使用Seaborn绘制散点图
-    ax = sns.lineplot(x=x, y=y)
+    ax = sns.lineplot(x=xx, y=yy)
 
     # 设置横轴和纵轴标签
     ax.set(xlabel="Percentiles", ylabel="Cumulative sum percentage")
     # 显示绘图
     plt.savefig(
         tool.get_profiler_data_save_path(
-            "degree_percent_distribution_Reddit.png", "img"
+            "degree_percent_distribution_" + dataset_name + ".png", "img"
         )
     )
 
 
+def run(rank, params):
+    dataset_name, dynamic_cache_ratio, batch_size = params
+    test = CacheProfiler()
+    test.init_config(
+        dataset_name=dataset_name,
+        gpu_list=[0],
+        sample_gpu=rank % 3,
+        dynamic_cache_policy="FIFO",
+        dynamic_cache_ratio=dynamic_cache_ratio,
+        batch_size=batch_size,
+    )
+    hit_ratio = test.fifo_cache_hit_ratio_analysis_on_single()
+
+    print(
+        "dataset:"
+        + dataset_name
+        + " cache ratio:"
+        + str(dynamic_cache_ratio)
+        + " batch size:"
+        + str(batch_size)
+        + " hit ratio:"
+        + str(hit_ratio)
+    )
+    return [dataset_name, dynamic_cache_ratio, batch_size, hit_ratio]
+
+
+def fifo_hit_ratio_contrast():
+    dataset = ["Reddit", "ogbn-products"]
+    cache_ratio = [
+        0.1,
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+    ]
+    batch_sizes = [256, 512, 1024, 2048]
+    params_list = [
+        (dataset_name, dynamic_cache_ratio, batch_size)
+        for dataset_name in dataset
+        for batch_size in batch_sizes
+        for dynamic_cache_ratio in cache_ratio
+    ]
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(processes=3) as pool:
+        res = pool.starmap(run, [(r, p) for r, p in enumerate(params_list)])
+        res_df = pd.DataFrame(
+            res, columns=["dataset", "cache_ratio", "batch_size", "hit_ratio"]
+        )
+        res_df.to_csv(
+            tool.get_profiler_data_save_path(
+                file_name="fifo_hit_ratio_analysis_on_single.csv", item="cache"
+            ),
+            index=False,
+        )
+
+
+def fifo_hit_ratio_trendline():
+    """FIFO策略早不同数据集、不同batch size下，缓存比例和命中率折线图对比"""
+
+
 if __name__ == "__main__":
-    print("hello")
-    degree_percent_distribution()
+    # degree_percent_distribution("ogbn-papers100M")
+    # fifo_hit_ratio_contrast()
+    # cache_test()
+    # fifo_hit_ratio_test()
+    ...
