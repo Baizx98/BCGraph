@@ -78,7 +78,7 @@ def degree_percent_distribution(dataset_name: str):
     )
 
 
-def run(rank, params):
+def fifo_hit_ratio_contrast_run(rank, params):
     dataset_name, dynamic_cache_ratio, batch_size = params
     test = CacheProfiler()
     test.init_config(
@@ -123,7 +123,9 @@ def fifo_hit_ratio_contrast():
     ]
     ctx = mp.get_context("spawn")
     with ctx.Pool(processes=3) as pool:
-        res = pool.starmap(run, [(r, p) for r, p in enumerate(params_list)])
+        res = pool.starmap(
+            fifo_hit_ratio_contrast_run, [(r, p) for r, p in enumerate(params_list)]
+        )
         res_df = pd.DataFrame(
             res, columns=["dataset", "cache_ratio", "batch_size", "hit_ratio"]
         )
@@ -135,8 +137,134 @@ def fifo_hit_ratio_contrast():
         )
 
 
+def degree_and_fifo_ratio_contrast_run(rank, params):
+    dataset_name, batch_size, static_cache_ratio, dynamic_cache_ratio = params
+    test = CacheProfiler()
+    test.init_config(
+        dataset_name=dataset_name,
+        gpu_list=[0],
+        sample_gpu=rank % 2 + 1,
+        static_cache_policy="degree",
+        static_cache_ratio=static_cache_ratio,
+        dynamic_cache_policy="FIFO",
+        dynamic_cache_ratio=dynamic_cache_ratio,
+        batch_size=batch_size,
+    )
+    test.cache_nids_to_gpu()
+    (
+        static_hit_ratio,
+        dynamic_hit_ratio,
+        relevant_dynamic_hit_ratio,
+        global_hit_tatio,
+    ) = test.degree_and_fifo_mixed_analysis_on_single()
+    print(
+        "dataset_name:",
+        dataset_name,
+        "batch_size:",
+        batch_size,
+        "static_cache_ratio:",
+        static_cache_ratio,
+        "dynamic_cache_ratio:",
+        dynamic_cache_ratio,
+        "static_hit_ratio:",
+        static_hit_ratio,
+        "dynamic_hit_ratio:",
+        dynamic_hit_ratio,
+        "relevant_dynamic_hit_ratio:",
+        relevant_dynamic_hit_ratio,
+        "global_hit_tatio:",
+        global_hit_tatio,
+    )
+    return [
+        dataset_name,
+        batch_size,
+        static_cache_ratio,
+        dynamic_cache_ratio,
+        static_hit_ratio,
+        dynamic_hit_ratio,
+        relevant_dynamic_hit_ratio,
+        global_hit_tatio,
+    ]
+
+
+def degree_and_fifo_ratio_contrast():
+    dataset = ["Reddit", "ogbn-products"]
+    batch_sizes = [512, 1024]
+    static_cache_ratio = [0.2, 0.3, 0.4]
+    dynamic_cache_ratio = [0.1, 0.2, 0.3, 0.4]
+    params_list = [
+        (
+            dataset_name,
+            batch_size,
+            static_ratio,
+            dynamic_ratio,
+        )
+        for dataset_name in dataset
+        for batch_size in batch_sizes
+        for static_ratio in static_cache_ratio
+        for dynamic_ratio in dynamic_cache_ratio
+    ]
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(processes=3) as pool:
+        res = pool.starmap(
+            degree_and_fifo_ratio_contrast_run,
+            [(r, p) for r, p in enumerate(params_list)],
+        )
+        res_df = pd.DataFrame(
+            res,
+            columns=[
+                "dataset_name",
+                "batch_size",
+                "static_cache_ratio",
+                "dynamic_cache_ratio",
+                "static_hit_ratio",
+                "dynamic_hit_ratio",
+                "relevant_dynamic_hit_ratio",
+                "global_hit_tatio",
+            ],
+        )
+        res_df.to_csv(
+            tool.get_profiler_data_save_path(
+                file_name="degree_and_fifo_ratio_contrast", item="cache"
+            ),
+            index=False,
+        )
+
+
 def fifo_hit_ratio_trendline():
     """FIFO策略早不同数据集、不同batch size下，缓存比例和命中率折线图对比"""
+    df = pd.read_csv(
+        tool.get_profiler_data_save_path(
+            file_name="fifo_hit_ratio_analysis_on_single.csv", item="cache"
+        )
+    )
+    print(df.columns)
+    print(df.head)
+    sns.set_style("whitegrid")
+    sns.set_palette("bright")
+    ax = sns.lineplot(
+        x="cache_ratio",
+        y="hit_ratio",
+        hue="dataset",
+        style="batch_size",
+        dashes=[(1, 1), (2, 1), (3, 2), (4, 1)],
+        data=df,
+    )
+    ax.set(xlabel="cache ratio", ylabel="hit ratio")
+
+    plt.savefig(tool.get_profiler_data_save_path("fifo_hit_ratio_trendline.png", "img"))
+
+
+def fifo_test():
+    access_list = [1, 2, 3] * 3
+    cache = FIFOCache(3)
+    hit_count = 0
+    for id in access_list:
+        if cache.get(id) == -1:
+            cache.put(id, 1)
+        else:
+            hit_count += 1
+    print(hit_count / len(access_list))
 
 
 if __name__ == "__main__":
@@ -144,4 +272,6 @@ if __name__ == "__main__":
     # fifo_hit_ratio_contrast()
     # cache_test()
     # fifo_hit_ratio_test()
-    ...
+    # fifo_test()
+    # fifo_hit_ratio_trendline()
+    degree_and_fifo_ratio_contrast()

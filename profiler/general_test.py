@@ -39,6 +39,7 @@ class CacheProfiler:
         self.sample_nums_list = []
         self.gpu_frequency_list = []
         self.gpu_frequency_total: torch.Tensor = None
+        self.gpu_cached_ids = None  # 单个GPU缓存的节点id
         self.gpu_cached_ids_list: list[torch.Tensor] = []
 
         # cache
@@ -46,6 +47,7 @@ class CacheProfiler:
         self.dynamic_cache_ratio = 0.2
         # static cache
         self.static_cache_policy = None
+        self.static_cache_capacity = 0
         self.block_size = 0
         # dynamic cache
         self.dynamic_cache = None
@@ -127,6 +129,7 @@ class CacheProfiler:
 
         # 初始化缓存策略
         self.static_cache_policy = static_cache_policy
+        self.static_cache_capacity = int(self.csr_topo.node_count * static_cache_ratio)
         self.dynamic_cache_policy = dynamic_cache_policy
         self.dynamic_cache_capacity = int(
             self.csr_topo.node_count * dynamic_cache_ratio
@@ -379,6 +382,45 @@ class CacheProfiler:
         # 数据集、动态缓存比例、batch size
         return hit_ratio
 
+    def cache_nids_to_gpu(self):
+        """单GPU模式下将节点缓存至GPU中"""
+        if self.static_cache_policy == "degree":
+            degree = self.csr_topo.degree
+            _, degree_oreder = torch.sort(degree)
+            self.gpu_cached_ids = degree_oreder[: self.static_cache_capacity]
+        logging.info("cached down")
+
+    def degree_and_fifo_mixed_analysis_on_single(self):
+        static_hit_count = 0
+        dynamic_hit_count = 0
+        access_count = 0
+        dynamic_access_count = 0
+        for mini_batch in self.dataloader:
+            n_id, _, _ = self.quiver_sample.sample(mini_batch)
+            access_count += n_id.shape[0]
+            static_hit_nids: set = set(self.gpu_cached_ids.tolist()) & set(
+                n_id.tolist()
+            )
+            static_hit_count += len(static_hit_nids)
+            dynamic_access_nids: set = set(n_id.tolist()) - static_hit_nids
+            dynamic_access_count += len(dynamic_access_nids)
+            dynamic_access_nids = list(dynamic_access_nids)
+            for id in dynamic_access_nids:
+                if self.dynamic_cache.get(id) == -1:
+                    self.dynamic_cache.put(id, 1)
+                else:
+                    dynamic_hit_count += 1
+        static_hit_ratio = static_hit_count / access_count
+        dynamic_hit_ratio = dynamic_hit_count / access_count
+        relevant_dynamic_hit_ratio = dynamic_hit_count / dynamic_access_count
+        global_hit_tatio = (static_hit_count + dynamic_hit_count) / access_count
+        return (
+            static_hit_ratio,
+            dynamic_hit_ratio,
+            relevant_dynamic_hit_ratio,
+            global_hit_tatio,
+        )
+
 
 class CacheModel:
     def __init__(self, capacity) -> None:
@@ -386,7 +428,7 @@ class CacheModel:
         self.cache = {}
 
     @abstractclassmethod
-    def get(id):
+    def get(self, id):
         pass
 
     @abstractclassmethod
@@ -394,9 +436,10 @@ class CacheModel:
         pass
 
 
-class FIFOCache(CacheModel):
+class FIFOCache:
     def __init__(self, capacity) -> None:
-        super.__init__(capacity)
+        self.capacity = capacity
+        self.cache = {}
         self.list = []
 
     def get(self, nid):
