@@ -9,8 +9,9 @@ from torch_geometric.nn import SAGEConv
 
 import quiver
 
-path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'Reddit')
-dataset = Reddit(path)
+#path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'Reddit')
+#dataset = Reddit(path)
+dataset = Reddit('/data/Reddit/')
 data = dataset[0]
 
 train_idx = data.train_mask.nonzero(as_tuple=False).view(-1)
@@ -96,15 +97,18 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 # Step 2: Using Quiver's Feature
 ################################
 # x = data.x.to(device) # Original PyG Code
-x = quiver.Feature(rank=0, device_list=[0], device_cache_size="4G", cache_policy="device_replicate", csr_topo=csr_topo) # Quiver
-x.from_cpu_tensor(data.x) # Quiver
+cache_ratio=data.x.numel()*4*0.2
+x = quiver.Feature(rank=0, device_list=[0], device_cache_size=cache_ratio, cache_policy="device_replicate", csr_topo=csr_topo) # Quiver
+#x.from_cpu_tensor(data.x)
+dynamic_cache_ratio=data.x.numel()*4*0.2
+x.from_cpu_tensor(data.x,None,True,dynamic_cache_ratio)
 
 y = data.y.squeeze().to(device)
 
 
 def train(epoch):
     model.train()
-
+    x.begin_compute_missrate()
     pbar = tqdm(total=int(data.train_mask.sum()))
     pbar.set_description(f'Epoch {epoch:02d}')
 
@@ -132,7 +136,7 @@ def train(epoch):
 
     loss = total_loss / len(train_loader)
     approx_acc = total_correct / int(data.train_mask.sum())
-
+    x.get_miss_rate()
     return loss, approx_acc
 
 
@@ -152,9 +156,9 @@ def test():
     return results
 
 
-for epoch in range(1, 11):
+for epoch in range(1, 3):
     loss, acc = train(epoch)
     print(f'Epoch {epoch:02d}, Loss: {loss:.4f}, Approx. Train: {acc:.4f}')
-    train_acc, val_acc, test_acc = test()
+    '''train_acc, val_acc, test_acc = test()
     print(f'Train: {train_acc:.4f}, Val: {val_acc:.4f}, '
-          f'Test: {test_acc:.4f}')
+          f'Test: {test_acc:.4f}')'''
