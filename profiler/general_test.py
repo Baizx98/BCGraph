@@ -12,6 +12,8 @@ from ogb.nodeproppred import PygNodePropPredDataset
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib
+import numpy as np
+import scipy.sparse as sp
 
 import quiver
 import tool
@@ -61,7 +63,6 @@ class CacheProfiler:
             datefmt="%Y-%m-%d %H:%M:%S",
             handlers=[logging.StreamHandler()],
         )
-        print("log")
         logging.info("CacheProfiler is created")
 
     def __str__(self) -> str:
@@ -94,16 +95,36 @@ class CacheProfiler:
             self.train_idx: torch.Tensor = self.data.train_mask.nonzero(
                 as_tuple=False
             ).view(-1)
-        print(self.dataset_name[:4])
+            # 初始化图拓扑结构
+            self.csr_topo = quiver.CSRTopo(self.data.edge_index)
+        # print(self.dataset_name[:4])
         if self.dataset_name[:4] == "ogbn":
             self.dataset = PygNodePropPredDataset(self.dataset_name, self.dataset_path)
             self.data = self.dataset[0]
             split_idx = self.dataset.get_idx_split()
             self.train_idx = split_idx["train"]
+            # 初始化图拓扑结构
+            self.csr_topo = quiver.CSRTopo(self.data.edge_index)
 
-        self.train_idx_parallel = self.train_idx.split(
-            self.train_idx.size(0) // self.world_size
-        )
+        if self.dataset_name == "sub_Reddit":
+            sub_dataset_path = "/home8t/bzx/padata/reddit/4naive/"
+            sub_train_id = np.load(os.path.join(sub_dataset_path, "sub_trainid_0.npy"))
+            sub_adj = sp.load_npz(os.path.join(sub_dataset_path, "subadj_0.npz"))
+            self.train_idx = torch.from_numpy(sub_train_id)
+            self.csr_topo = quiver.CSRTopo(
+                indptr=sub_adj.indptr, indices=sub_adj.indices
+            )
+
+        if self.dataset_name == "sub_ogbn-products":
+            sub_dataset_path = "/home8t/bzx/padata/ogbn_products/4naive/"
+            self.train_idx = torch.from_numpy(
+                np.load(os.path.join(sub_dataset_path, "sub_trainid_0.npy"))
+            )
+            sub_adj = sp.load_npz(os.path.join(sub_dataset_path, "subadj_0.npz"))
+            self.csr_topo = quiver.CSRTopo(
+                indptr=sub_adj.indptr, indices=sub_adj.indices
+            )
+        logging.info("node count:" + str(self.csr_topo.node_count))
         # 初始化DataLoader
         self.dataloader = torch.utils.data.DataLoader(
             self.train_idx,
@@ -111,25 +132,33 @@ class CacheProfiler:
             shuffle=True,
             drop_last=True,
         )
-        for i in range(self.world_size):
-            train_loader_temp = torch.utils.data.DataLoader(
-                self.train_idx_parallel[i],
-                batch_size=self.batch_size,
-                shuffle=True,
-                drop_last=True,
+        if self.world_size > 1:
+            self.train_idx_parallel = self.train_idx.split(
+                self.train_idx.size(0) // self.world_size
             )
-            self.dataloader_list.append(train_loader_temp)
-        # 初始化图拓扑结构
-        self.csr_topo = quiver.CSRTopo(self.data.edge_index)
+            for i in range(self.world_size):
+                train_loader_temp = torch.utils.data.DataLoader(
+                    self.train_idx_parallel[i],
+                    batch_size=self.batch_size,
+                    shuffle=True,
+                    drop_last=True,
+                )
+                self.dataloader_list.append(train_loader_temp)
+            self.block_size = (
+                int(self.static_cache_ratio * self.csr_topo.node_count)
+                // self.world_size
+            )
+
         # 初始化采样器
         self.sample_gpu = sample_gpu
         self.quiver_sample = quiver.pyg.GraphSageSampler(
-            self.csr_topo, sizes=[25, 10], device=self.sample_gpu, mode="GPU"
+            self.csr_topo, sizes=[15, 10, 5], device=self.sample_gpu, mode="GPU"
         )
 
         # 初始化缓存策略
         self.static_cache_policy = static_cache_policy
         self.static_cache_capacity = int(self.csr_topo.node_count * static_cache_ratio)
+        logging.info("sata capacity:" + str(self.static_cache_capacity))
         self.dynamic_cache_policy = dynamic_cache_policy
         self.dynamic_cache_capacity = int(
             self.csr_topo.node_count * dynamic_cache_ratio
@@ -143,9 +172,6 @@ class CacheProfiler:
         # 初始化预采样全局频率统计
         self.gpu_frequency_total = torch.zeros(self.csr_topo.node_count, dtype=int)
 
-        self.block_size = (
-            int(self.static_cache_ratio * self.csr_topo.node_count) // self.world_size
-        )
         logging.info("config inited")
 
     def cache_nids_to_gpus(self):
@@ -170,7 +196,7 @@ class CacheProfiler:
         Args:
             epoch (int): 预采样的轮数
         """
-        data_path = self.dataset_name + "_saved_frequency_data.pth"
+        data_path = self.dataset_name + "_" + str(epoch) + "_saved_frequency_data.pth"
         if osp.exists(tool.get_profiler_data_save_path(data_path)):
             saved_data = torch.load(tool.get_profiler_data_save_path(data_path))
             self.gpu_frequency_list = saved_data["gpu_frequency_list"]
@@ -188,8 +214,8 @@ class CacheProfiler:
                         print("epoch:", i)
                     for mini_batch in self.dataloader_list[gpu_id]:
                         n_id, _, _ = self.quiver_sample.sample(mini_batch)
-                        gpu_frequency_temp[n_id] += 1
-                        self.gpu_frequency_total[n_id] += 1
+                        gpu_frequency_temp[n_id.cpu()] += 1
+                        self.gpu_frequency_total[n_id.cpu()] += 1
                 self.gpu_frequency_list.append(gpu_frequency_temp)
             saved_data = {
                 "gpu_frequency_list": self.gpu_frequency_list,
@@ -200,7 +226,7 @@ class CacheProfiler:
                 tool.get_profiler_data_save_path(data_path),
             )
 
-        logging.info("pre-sample done")
+        logging.info("{} epoch pre-sample done".format(epoch))
 
     def get_comprehensive_score_of_multiple_indicators(self):
         """生成节点重要度的综合衡量评价指标"""
@@ -365,7 +391,16 @@ class CacheProfiler:
         )
         logging.info("batch repetiton analysis done")
 
-    def fifo_cache_hit_ratio_analysis_on_single(self):
+    def fifo_cache_hit_ratio_analysis_on_single(self, pre_cache=False):
+        if pre_cache and self.dynamic_cache_capacity > 0:
+            logging.info("pre cache with degree policy")
+            order = torch.sort(self.csr_topo.degree, descending=True)
+            for id in order[
+                self.static_cache_capacity : self.static_cache_capacity
+                + self.dynamic_cache_capacity
+            ]:
+                id = int(id.tolist())
+                self.dynamic_cache.put(id, 1)
         hit_count = 0
         access_count = 0
         logging.info(self.dataset_name + " begin test")
@@ -386,18 +421,50 @@ class CacheProfiler:
         """单GPU模式下将节点缓存至GPU中"""
         if self.static_cache_policy == "degree":
             degree = self.csr_topo.degree
-            _, degree_oreder = torch.sort(degree)
-            self.gpu_cached_ids = degree_oreder[: self.static_cache_capacity]
-        logging.info("cached down")
+            _, degree_orderd = torch.sort(degree, descending=True)
+            self.gpu_cached_ids = degree_orderd[: self.static_cache_capacity]
+        if self.static_cache_policy == "frequency":
+            self.get_nids_all_frequency(3)
+            _, frequency_orderd = torch.sort(self.gpu_frequency_total, descending=True)
+            self.gpu_cached_ids = frequency_orderd[: self.static_cache_capacity]
+        logging.info("cached done")
 
-    def degree_and_fifo_mixed_analysis_on_single(self):
+    def cache_nids_to_gpu_nvlink(self):
+        """模拟在4个GPU NVLink互连的情况下，使用degree排序策略将排名靠前的节点特征交叉缓存至每个GPU后
+        GPU0上的缓存情况
+        """
+        if self.static_cache_policy == "degree":
+            _, degree_orderd = torch.sort(self.csr_topo.degree, descending=True)
+            self.gpu_cached_ids = degree_orderd[
+                : self.static_cache_capacity : self.world_size
+            ]
+            print(degree_orderd[0 : self.static_cache_capacity : self.world_size])
+            logging.info("nvlink cache done")
+
+    def degree_and_fifo_mixed_analysis_on_single(self, pre_cache=False):
         static_hit_count = 0
         dynamic_hit_count = 0
         access_count = 0
         dynamic_access_count = 0
-        for mini_batch in self.dataloader:
+        batch_count = 0
+        if pre_cache:
+            logging.info("pre cache with degree policy")
+            order = torch.sort(self.csr_topo.degree, descending=True)
+            for id in order[
+                self.static_cache_capacity : self.static_cache_capacity
+                + self.dynamic_cache_capacity
+            ]:
+                id = int(id.tolist())
+                self.dynamic_cache.put(id, 1)
+        my_dataloader = None
+        if self.world_size > 1:
+            my_dataloader = self.dataloader_list[0]
+        else:
+            my_dataloader = self.dataloader
+        for mini_batch in my_dataloader:
             n_id, _, _ = self.quiver_sample.sample(mini_batch)
-            access_count += n_id.shape[0]
+            access_count += len(n_id)
+            batch_count += 1
             static_hit_nids: set = set(self.gpu_cached_ids.tolist()) & set(
                 n_id.tolist()
             )
@@ -405,14 +472,24 @@ class CacheProfiler:
             dynamic_access_nids: set = set(n_id.tolist()) - static_hit_nids
             dynamic_access_count += len(dynamic_access_nids)
             dynamic_access_nids = list(dynamic_access_nids)
+            n_id = n_id.tolist()
+            dynamic_access_nids = [x for x in n_id if x not in static_hit_nids]
+            if batch_count % 10 == 0:
+                ...
+                # print("batch ratio:", len(static_hit_nids) / len(n_id))
             for id in dynamic_access_nids:
                 if self.dynamic_cache.get(id) == -1:
                     self.dynamic_cache.put(id, 1)
                 else:
+                    # print("hit!")
                     dynamic_hit_count += 1
+        logging.info("access node num:" + str(int(access_count / batch_count)))
         static_hit_ratio = static_hit_count / access_count
         dynamic_hit_ratio = dynamic_hit_count / access_count
-        relevant_dynamic_hit_ratio = dynamic_hit_count / dynamic_access_count
+        if dynamic_access_count != 0:
+            relevant_dynamic_hit_ratio = dynamic_hit_count / dynamic_access_count
+        else:
+            relevant_dynamic_hit_ratio = 0
         global_hit_tatio = (static_hit_count + dynamic_hit_count) / access_count
         return (
             static_hit_ratio,
@@ -420,20 +497,6 @@ class CacheProfiler:
             relevant_dynamic_hit_ratio,
             global_hit_tatio,
         )
-
-
-class CacheModel:
-    def __init__(self, capacity) -> None:
-        self.capacity = capacity
-        self.cache = {}
-
-    @abstractclassmethod
-    def get(self, id):
-        pass
-
-    @abstractclassmethod
-    def put(self, id, feat):
-        pass
 
 
 class FIFOCache:
@@ -453,6 +516,8 @@ class FIFOCache:
         if nid in self.cache:
             self.cache[nid] = feature
         else:
+            if self.capacity == 0:
+                return
             if len(self.list) == self.capacity:
                 oldest_nid = self.list.pop(0)
                 self.cache.pop(oldest_nid)
@@ -462,18 +527,18 @@ class FIFOCache:
 
 if __name__ == "__main__":
     # 生成不同缓存比例下采用频率热度排序后在clique内的缓存命中率
-    for i in range(10):
-        cache_temp = CacheProfiler()
-        cache_temp.init_config(
-            dataset_name="ogbn-products",
-            gpu_list=[0, 1],
-            static_cache_policy="frequency_separate",
-            static_cache_ratio=(i + 1) / 10,
-            batch_size=1024,
-        )
-        cache_temp.get_nids_all_frequency(20)
-        cache_temp.cache_nids_to_gpus()
-        cache_temp.cache_analysis_on_clique()
+    # for i in range(10):
+    #     cache_temp = CacheProfiler()
+    #     cache_temp.init_config(
+    #         dataset_name="ogbn-products",
+    #         gpu_list=[0, 1],
+    #         static_cache_policy="frequency_separate",
+    #         static_cache_ratio=(i + 1) / 10,
+    #         batch_size=1024,
+    #     )
+    #     cache_temp.get_nids_all_frequency(20)
+    #     cache_temp.cache_nids_to_gpus()
+    #     cache_temp.cache_analysis_on_clique()
 
     # cache_batch = CacheProfiler()
     # cache_batch.init_config(
@@ -484,3 +549,72 @@ if __name__ == "__main__":
     #     batch_size=2048,
     # )
     # cache_batch.batch_repetition_analysis_on_clique()
+    test = CacheProfiler()
+    test.init_config(
+        dataset_name="sub_ogbn-products",
+        gpu_list=[0, 1, 2, 3],
+        sample_gpu=1,
+        static_cache_policy="degree",
+        static_cache_ratio=0.2,
+        dynamic_cache_policy="FIFO",
+        dynamic_cache_ratio=0,
+        batch_size=1024,
+    )
+    if test.dataset_name[:3] == "sub":
+        test.cache_nids_to_gpu()
+    else:
+        test.cache_nids_to_gpu_nvlink()
+    (
+        static_hit_ratio,
+        dynamic_hit_ratio,
+        relevant_dynamic_hit_ratio,
+        global_hit_tatio,
+    ) = test.degree_and_fifo_mixed_analysis_on_single()
+    print(
+        "static_hit_ratio:",
+        static_hit_ratio,
+        "dynamic_hit_ratio:",
+        dynamic_hit_ratio,
+        "relevant_dynamic_hit_ratio:",
+        relevant_dynamic_hit_ratio,
+        "global_hit_tatio:",
+        global_hit_tatio,
+    )
+    print("static hit ration:{},cache ration:{:.2f}".format(static_hit_ratio, 0.223695))
+
+    # for i in range(10):
+    #     test.init_config(
+    #         dataset_name="sub_ogbn-products",
+    #         gpu_list=[0, 1, 2, 3],
+    #         sample_gpu=1,
+    #         static_cache_policy="degree",
+    #         static_cache_ratio=(i + 1) / 10,
+    #         dynamic_cache_policy="FIFO",
+    #         dynamic_cache_ratio=0,
+    #         batch_size=1024,
+    #     )
+    #     if test.dataset_name[:3] == "sub":
+    #         test.cache_nids_to_gpu()
+    #     else:
+    #         test.cache_nids_to_gpu_nvlink()
+    #     (
+    #         static_hit_ratio,
+    #         dynamic_hit_ratio,
+    #         relevant_dynamic_hit_ratio,
+    #         global_hit_tatio,
+    #     ) = test.degree_and_fifo_mixed_analysis_on_single()
+    #     # print(
+    #     #     "static_hit_ratio:",
+    #     #     static_hit_ratio,
+    #     #     "dynamic_hit_ratio:",
+    #     #     dynamic_hit_ratio,
+    #     #     "relevant_dynamic_hit_ratio:",
+    #     #     relevant_dynamic_hit_ratio,
+    #     #     "global_hit_tatio:",
+    #     #     global_hit_tatio,
+    #     # )
+    #     print(
+    #         "static hit ration:{},cache ration:{:.2f}".format(
+    #             static_hit_ratio, (i + 1) / 10
+    #         )
+    #     )

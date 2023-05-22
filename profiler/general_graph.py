@@ -272,6 +272,6 @@ if __name__ == "__main__":
     # fifo_hit_ratio_contrast()
     # cache_test()
     # fifo_hit_ratio_test()
-    # fifo_test()
+    fifo_test()
     # fifo_hit_ratio_trendline()
-    degree_and_fifo_ratio_contrast()
+    # degree_and_fifo_ratio_contrast()
