@@ -8,6 +8,8 @@ import scipy.sparse as sp
 import torch
 from ogb.nodeproppred import PygNodePropPredDataset
 
+import quiver
+
 
 def reindex_nid_by_hot_metric(
     hot_metric: Union[torch.Tensor, List[torch.Tensor]]
@@ -119,5 +121,43 @@ def livejournal2edgeindex():
     )
 
 
+def split_dataset(vnum, path):
+    nids = np.arange(vnum)
+    np.random.shuffle(nids)
+    train_len = int(vnum * 0.65)
+    val_len = int(vnum * 0.1)
+    test_len = vnum - train_len - val_len
+    # train mask
+    train_mask = np.zeros(vnum, dtype=int)
+    train_mask[nids[0:train_len]] = 1
+    # val mask
+    val_mask = np.zeros(vnum, dtype=int)
+    val_mask[nids[train_len : train_len + val_len]] = 1
+    # test mask
+    test_mask = np.zeros(vnum, dtype=int)
+    test_mask[nids[-test_len:]] = 1
+    # save
+    if path is not None:
+        np.save(os.path.join(path, "train.npy"), train_mask)
+        np.save(os.path.join(path, "val.npy"), val_mask)
+        np.save(os.path.join(path, "test.npy"), test_mask)
+    return train_mask, val_mask, test_mask
+
+
+def random_feature(vnum, feat_size, path):
+    feat_mat = np.random.random((vnum, feat_size)).astype(np.float32)
+    np.save(path, feat_mat)
+
+
+def random_label(vnum, class_num, path):
+    labels = np.random.randint(class_num, size=vnum)
+    np.save(path, labels)
+
+
 if __name__ == "__main__":
-    livejournal2edgeindex()
+    path = "/home8t/bzx/data/livejournal"
+    edge_index = torch.load("/home8t/bzx/data/livejournal/edge_index.pt")
+    csr_topo = quiver.CSRTopo(edge_index=edge_index)
+    vnum = csr_topo.node_count
+    a, b, c = split_dataset(vnum, path)
+    print(a)

@@ -1,8 +1,6 @@
 import os
 import os.path as osp
-import time
 import logging
-from abc import ABC, abstractclassmethod
 
 import torch
 from torch_geometric.datasets import Reddit
@@ -10,8 +8,6 @@ from torch_geometric.data import Data
 from ogb.nodeproppred import PygNodePropPredDataset
 
 import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib
 import numpy as np
 import scipy.sparse as sp
 
@@ -106,6 +102,17 @@ class CacheProfiler:
             # 初始化图拓扑结构
             self.csr_topo = quiver.CSRTopo(self.data.edge_index)
 
+        if self.dataset_name == "livejournal":
+            edge_index = torch.load(
+                osp.join(self.dataset_path, self.dataset_name, "edge_index.pt")
+            )
+            self.csr_topo = quiver.CSRTopo(edge_index)
+            train_mask = np.load(
+                osp.join(self.dataset_path, self.dataset_name, "train.npy")
+            )
+            train_id = np.nonzero(train_mask)[0].astype(np.int64)
+            self.train_idx = torch.from_numpy(train_id)
+
         if self.dataset_name == "sub_Reddit":
             sub_dataset_path = "/home8t/bzx/padata/reddit/4naive/"
             sub_train_id = np.load(os.path.join(sub_dataset_path, "sub_trainid_0.npy"))
@@ -152,7 +159,7 @@ class CacheProfiler:
         # 初始化采样器
         self.sample_gpu = sample_gpu
         self.quiver_sample = quiver.pyg.GraphSageSampler(
-            self.csr_topo, sizes=[15, 10, 5], device=self.sample_gpu, mode="GPU"
+            self.csr_topo, sizes=[25, 10], device=self.sample_gpu, mode="GPU"
         )
 
         # 初始化缓存策略
@@ -496,6 +503,27 @@ class CacheProfiler:
             dynamic_hit_ratio,
             relevant_dynamic_hit_ratio,
             global_hit_tatio,
+        )
+
+    def static_cache_analysis_on_single(self):
+        hit_count = 0
+        access_count = 0
+        for batch_id, mini_batch in enumerate(self.dataloader):
+            n_id, _, _ = self.quiver_sample.sample(mini_batch)
+            access_count += n_id.size(0)
+            hit_n_id: set = set(self.gpu_cached_ids.tolist()) & set(n_id.tolist())
+            hit_count += len(hit_n_id)
+            if batch_id % 10 == 0:
+                print(
+                    "{}".format(
+                        n_id.size(0),
+                    )
+                )
+        hit_ratio = hit_count / access_count
+        return (
+            hit_ratio,
+            access_count,
+            hit_count,
         )
 
 
