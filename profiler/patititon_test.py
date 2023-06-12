@@ -1,6 +1,7 @@
 import time
 import random
 import queue
+import os.path as osp
 
 import torch
 import numpy as np
@@ -16,9 +17,13 @@ train_idx: torch.Tensor = data.train_mask.nonzero(as_tuple=False).view(-1)
 idx = train_idx.numpy()
 edge_index: torch.Tensor = data.edge_index
 edge_list = edge_index.numpy().T
-print(edge_list.shape)
-print(data.is_undirected())
-print(idx)
+
+
+def set_random_seed(seed: int):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
 
 
 def demo_test():
@@ -96,9 +101,7 @@ def train_idx_partition(
 
     train_visited_count = 0
     train_index_dic = {id: index for index, id in enumerate(train_idx)}
-    # print("dic:", train_index_dic)
-    # print(train_index_dic[245])
-    # 从训练集中（或者全图？）随机选取partition_num个起始节点,并加入队列作为初始值
+    # TODO 从训练集中（或者全图？）随机选取partition_num个起始节点,并加入队列作为初始值
     start_idx = random.sample(range(train_idx.shape[0]), partition_num)
     print("seed index:", start_idx)
     start_idx = train_idx[start_idx]
@@ -136,7 +139,7 @@ def train_idx_partition(
             # 然后将当前节点的邻居添加到next queue中（是否添加随机性？）
             # 如下是一个分区的一层的遍历
             while not bfs_queues[pa_id]["now_que"].empty():
-                print("layer:{},pa id:{}".format(layer_num, pa_id))
+                # print("layer:{},pa id:{}".format(layer_num, pa_id))
                 nid = bfs_queues[pa_id]["now_que"].get()
                 # 找到nid的所有邻居节点，从csr格式中获取,将tensor转为numpy
                 neighbor_of_nid = (
@@ -170,19 +173,25 @@ def train_idx_partition(
                     pa_list_dic[pa_id].append(nid)
                     train_visited[train_index_dic[nid]] = True
                     train_visited_count += 1
+                    # 该分区得到一个新的训练节点时就中断遍历，开始为下一个分区搜索
+                    # break
             # 将上面的一层循环中访问节点的所有邻居节点去重后加入到next que中
             for neighbor in neighbors_to_next:
                 bfs_queues[pa_id]["next_que"].put(neighbor)
             # 以上一层遍历结束，下面更新now队列和next队列的内容
             # TODO 添加判断条件 上一层遍历结束的flag是该分区的now que为空，只有now que为空时才更新下一层队列到当前队列
+            # if not bfs_queues[pa_id]["now_que"].empty():
+            # continue
             bfs_queues[pa_id]["now_que"], bfs_queues[pa_id]["next_que"] = (
                 bfs_queues[pa_id]["next_que"],
                 bfs_queues[pa_id]["now_que"],
             )
         layer_num += 1
+        for i in range(partition_num):
+            print("partition {},node num:{}".format(i, len(pa_list_dic[i])))
 
     end = time.time()
-    print("time:", end - start)
+    print("time:", int(end - start), "s")
     return pa_list_dic
 
 
@@ -191,10 +200,11 @@ def train_partition_test():
     res = train_idx_partition(csrtopo=csrtopo, train_idx=idx, partition_num=4)
     for key, value in res.items():
         print("pa id:{},train node num:{}".format(key, len(value)))
-    np.save("/home8t/bzx/padata/reddit/pa_li_dic.npy", res)
+    np.save("/home8t/bzx/padata/reddit/pa_li_dic" + str(time.time()) + ".npy", res)
 
 
 if __name__ == "__main__":
+    set_random_seed(1998)
     # demo_test()
     # reddit_test()
     # train_idx_partition(1, train_idx=idx, partition_num=4)
