@@ -1,6 +1,7 @@
 import time
 import random
 import queue
+import collections
 import os.path as osp
 
 import torch
@@ -80,11 +81,23 @@ def reddit_test():
     np.save("/home8t/bzx/padata/reddit/path.npy", shortest_path_length)
 
 
-def train_idx_partition(
+def msbfs_train_partition(
     csrtopo: quiver.CSRTopo,
     train_idx: np.ndarray,
     partition_num: int,
 ):
+    """非并行版本的多源BFS训练集划分算法.随机生成种子节点，每个种子节点按层依次广度优先遍历.
+    使用collections中的deque,由于多源按层依次遍历,再加上遍历过程中会遇到超高度节点,会产生领域爆炸,
+    进而导致负载不均衡
+
+    Args:
+        csrtopo (quiver.CSRTopo): _description_
+        train_idx (np.ndarray): _description_
+        partition_num (int): _description_
+
+    Returns:
+        _type_: _description_
+    """
     # TODO 设置随机数种子
     ...
     ### 注意csrtopo中的为tensor，下面代码中需要的是numpy array！！！
@@ -109,13 +122,13 @@ def train_idx_partition(
 
     # 创建各个分区的当前和下一轮的队列 (或者open-closed表？)
     bfs_queues = {
-        i: {"now_que": queue.Queue(), "next_que": queue.Queue()}
+        i: {"now_que": collections.deque(), "next_que": collections.deque()}
         for i in range(partition_num)
     }
     # now_que中将种子节点入队完成初始化
     for i, id in enumerate(start_idx):
         print("seed id type:", type(id))
-        bfs_queues[i]["now_que"].put(id)
+        bfs_queues[i]["now_que"].append(id)
     # 创建邻居节点set，用来保存每层遍历中节点的所有邻居节点（并去重）
     neighbors_to_next = set()
     # 对所有分区分层地进行循环分配，直到所有的训练节点都被分配完毕
@@ -138,9 +151,9 @@ def train_idx_partition(
             # 首先遍历now queue中所有节点，每次迭代时判断是否为train，并设置visited信息
             # 然后将当前节点的邻居添加到next queue中（是否添加随机性？）
             # 如下是一个分区的一层的遍历
-            while not bfs_queues[pa_id]["now_que"].empty():
+            while bfs_queues[pa_id]["now_que"]:
                 # print("layer:{},pa id:{}".format(layer_num, pa_id))
-                nid = bfs_queues[pa_id]["now_que"].get()
+                nid = bfs_queues[pa_id]["now_que"].popleft()
                 # 找到nid的所有邻居节点，从csr格式中获取,将tensor转为numpy
                 neighbor_of_nid = (
                     csrtopo.indices[csrtopo.indptr[nid] : csrtopo.indptr[nid + 1]]
@@ -151,9 +164,12 @@ def train_idx_partition(
                 # TODO 可以考虑使用update方法，直接将可迭代的列表添加至set
                 # 此处添加下一层访问的节点时并没有考虑多个源遍历发生碰撞的情况，而是默认碰撞后继续重叠遍历
                 # 可以考虑为碰撞的节点添加随机性，也要考虑添加了随机性后算法是否收敛的问题
-                for neighbor in neighbor_of_nid:
-                    # bfs_queues[pa_id]["next_que"].put(neighbor)  # 此处有问题，大量重复节点
-                    neighbors_to_next.add(neighbor)
+                # TODO重新分配发生碰撞的训练节点，同时考虑邻居的度和分区已有训练节点数
+                # for neighbor in neighbor_of_nid:
+                # bfs_queues[pa_id]["next_que"].put(neighbor)  # 此处有问题，大量重复节点
+                # neighbors_to_next.add(neighbor)
+                # set.update使用c语言编写，比起for循环效率要高
+                neighbors_to_next.update(neighbor_of_nid)
                 # 处理当前节点的全局访问mask 这一块代码不是必须的
                 if full_visited[nid] == True:
                     continue
@@ -177,11 +193,12 @@ def train_idx_partition(
                     # break
             # 将上面的一层循环中访问节点的所有邻居节点去重后加入到next que中
             for neighbor in neighbors_to_next:
-                bfs_queues[pa_id]["next_que"].put(neighbor)
+                bfs_queues[pa_id]["next_que"].append(neighbor)
             # 以上一层遍历结束，下面更新now队列和next队列的内容
             # TODO 添加判断条件 上一层遍历结束的flag是该分区的now que为空，只有now que为空时才更新下一层队列到当前队列
-            # if not bfs_queues[pa_id]["now_que"].empty():
-            # continue
+            # 下面的两个语句也是为了实现细粒度的划分算法，可以保存当前分区当前层的遍历状态
+            # if bfs_queues[pa_id]["now_que"]:
+            #     continue
             bfs_queues[pa_id]["now_que"], bfs_queues[pa_id]["next_que"] = (
                 bfs_queues[pa_id]["next_que"],
                 bfs_queues[pa_id]["now_que"],
@@ -197,7 +214,7 @@ def train_idx_partition(
 
 def train_partition_test():
     csrtopo = quiver.CSRTopo(edge_index=edge_index)
-    res = train_idx_partition(csrtopo=csrtopo, train_idx=idx, partition_num=4)
+    res = msbfs_train_partition(csrtopo=csrtopo, train_idx=idx, partition_num=4)
     for key, value in res.items():
         print("pa id:{},train node num:{}".format(key, len(value)))
     np.save("/home8t/bzx/padata/reddit/pa_li_dic" + str(time.time()) + ".npy", res)

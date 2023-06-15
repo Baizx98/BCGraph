@@ -1,6 +1,8 @@
 import os
 import os.path as osp
+import time
 import logging
+from typing import List, Dict
 
 import torch
 from torch_geometric.datasets import Reddit
@@ -74,6 +76,7 @@ class CacheProfiler:
         static_cache_ratio: float = 0.0,
         dynamic_cache_ratio: float = 0.0,
         batch_size: int = 1024,
+        partition_strategy="naive",
     ):
         # 初始化参数
         self.dataset_name = dataset_name
@@ -140,8 +143,8 @@ class CacheProfiler:
             drop_last=True,
         )
         if self.world_size > 1:
-            self.train_idx_parallel = self.train_idx.split(
-                self.train_idx.size(0) // self.world_size
+            self.train_idx_parallel: List[torch.Tensor] = self.get_train_idx_parallel(
+                partition_strategy
             )
             for i in range(self.world_size):
                 train_loader_temp = torch.utils.data.DataLoader(
@@ -181,6 +184,22 @@ class CacheProfiler:
 
         logging.info("config inited")
 
+    def get_train_idx_parallel(self, partition_strategy: str):
+        # 在多GPU场景下数据并行训练时，为每个GPU分配不同的训练节点
+        train_idx_parallel = []
+        if partition_strategy == "msbfs":
+            path = "/home8t/bzx/padata/reddit/pa_li_dic1686533982.7872248.npy"
+            pa_list_dic: Dict[int, List[int]] = np.load(path, allow_pickle=True).item()
+            for i in range(self.world_size):
+                train_idx_parallel.append(torch.tensor(pa_list_dic[i]))
+        if partition_strategy == "shortest-path":
+            ...
+        if partition_strategy == "naive":
+            train_idx_parallel = self.train_idx.split(
+                self.train_idx.size(0) // self.world_size
+            )
+        return train_idx_parallel
+
     def cache_nids_to_gpus(self):
         # 静态缓存 将不同缓存策略下得到的缓存数据保存至不同的GPU缓存列表中
 
@@ -197,7 +216,7 @@ class CacheProfiler:
             ...
         return
 
-    def get_nids_all_frequency(self, epoch: int):
+    def get_nids_all_frequency(self, epoch: int = 3):
         """预采样获取节点访问频率
 
         Args:
@@ -526,6 +545,67 @@ class CacheProfiler:
             hit_count,
         )
 
+    def static_cache_analysis_on_multiple(self):
+        hit_ratio = []
+        data = []
+        for i in range(self.world_size):
+            hit_count = 0
+            access_count = 0
+            for batch_id, mini_batch in enumerate(self.dataloader_list[i]):
+                n_id, _, _ = self.quiver_sample.sample(mini_batch)
+                access_count += n_id.size(0)
+                print("i:", i)
+                hit_n_id: set = set(self.gpu_cached_ids_list[i].tolist()) & set(
+                    n_id.tolist()
+                )
+                hit_count += len(hit_n_id)
+                if batch_id % 10 == 0:
+                    print(
+                        "{}".format(
+                            n_id.size(0),
+                        )
+                    )
+                batch_hit_ratio = len(hit_n_id) / n_id.size(0)
+                data.append(
+                    [
+                        i,
+                        batch_id,
+                        self.static_cache_ratio,
+                        batch_hit_ratio,
+                        len(self.train_idx_parallel[i]),
+                        n_id.size(0),
+                    ]
+                )
+                print(
+                    i,
+                    batch_id,
+                    self.static_cache_ratio,
+                    batch_hit_ratio,
+                    len(self.train_idx_parallel[i]),
+                    n_id.size(0),
+                )
+            hit_ratio.append(hit_count / access_count)
+        df = pd.DataFrame(
+            data,
+            columns=[
+                "gpu_id",
+                "batch_id",
+                "cache_ratio",
+                "hit_ratio",
+                "sub_train_num",
+                "sub_graph_num",
+            ],
+        )
+        df.to_csv(
+            tool.get_profiler_data_save_path(
+                item="train_partition",
+                file_name=str(self.static_cache_ratio) + "reddit_hit.csv",
+            ),
+            index=False,
+        )
+        logging.info("hit analysis file save done!")
+        return hit_ratio
+
 
 class FIFOCache:
     def __init__(self, capacity) -> None:
@@ -554,95 +634,4 @@ class FIFOCache:
 
 
 if __name__ == "__main__":
-    # 生成不同缓存比例下采用频率热度排序后在clique内的缓存命中率
-    # for i in range(10):
-    #     cache_temp = CacheProfiler()
-    #     cache_temp.init_config(
-    #         dataset_name="ogbn-products",
-    #         gpu_list=[0, 1],
-    #         static_cache_policy="frequency_separate",
-    #         static_cache_ratio=(i + 1) / 10,
-    #         batch_size=1024,
-    #     )
-    #     cache_temp.get_nids_all_frequency(20)
-    #     cache_temp.cache_nids_to_gpus()
-    #     cache_temp.cache_analysis_on_clique()
-
-    # cache_batch = CacheProfiler()
-    # cache_batch.init_config(
-    #     dataset_name="products",
-    #     gpu_list=[0, 1],
-    #     cache_policy=None,
-    #     cache_ratio=0,
-    #     batch_size=2048,
-    # )
-    # cache_batch.batch_repetition_analysis_on_clique()
-    test = CacheProfiler()
-    test.init_config(
-        dataset_name="sub_ogbn-products",
-        gpu_list=[0, 1, 2, 3],
-        sample_gpu=1,
-        static_cache_policy="degree",
-        static_cache_ratio=0.2,
-        dynamic_cache_policy="FIFO",
-        dynamic_cache_ratio=0,
-        batch_size=1024,
-    )
-    if test.dataset_name[:3] == "sub":
-        test.cache_nids_to_gpu()
-    else:
-        test.cache_nids_to_gpu_nvlink()
-    (
-        static_hit_ratio,
-        dynamic_hit_ratio,
-        relevant_dynamic_hit_ratio,
-        global_hit_tatio,
-    ) = test.degree_and_fifo_mixed_analysis_on_single()
-    print(
-        "static_hit_ratio:",
-        static_hit_ratio,
-        "dynamic_hit_ratio:",
-        dynamic_hit_ratio,
-        "relevant_dynamic_hit_ratio:",
-        relevant_dynamic_hit_ratio,
-        "global_hit_tatio:",
-        global_hit_tatio,
-    )
-    print("static hit ration:{},cache ration:{:.2f}".format(static_hit_ratio, 0.223695))
-
-    # for i in range(10):
-    #     test.init_config(
-    #         dataset_name="sub_ogbn-products",
-    #         gpu_list=[0, 1, 2, 3],
-    #         sample_gpu=1,
-    #         static_cache_policy="degree",
-    #         static_cache_ratio=(i + 1) / 10,
-    #         dynamic_cache_policy="FIFO",
-    #         dynamic_cache_ratio=0,
-    #         batch_size=1024,
-    #     )
-    #     if test.dataset_name[:3] == "sub":
-    #         test.cache_nids_to_gpu()
-    #     else:
-    #         test.cache_nids_to_gpu_nvlink()
-    #     (
-    #         static_hit_ratio,
-    #         dynamic_hit_ratio,
-    #         relevant_dynamic_hit_ratio,
-    #         global_hit_tatio,
-    #     ) = test.degree_and_fifo_mixed_analysis_on_single()
-    #     # print(
-    #     #     "static_hit_ratio:",
-    #     #     static_hit_ratio,
-    #     #     "dynamic_hit_ratio:",
-    #     #     dynamic_hit_ratio,
-    #     #     "relevant_dynamic_hit_ratio:",
-    #     #     relevant_dynamic_hit_ratio,
-    #     #     "global_hit_tatio:",
-    #     #     global_hit_tatio,
-    #     # )
-    #     print(
-    #         "static hit ration:{},cache ration:{:.2f}".format(
-    #             static_hit_ratio, (i + 1) / 10
-    #         )
-    #     )
+    ...

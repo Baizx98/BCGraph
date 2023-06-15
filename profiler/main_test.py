@@ -51,5 +51,21 @@ def test_livejournel_hit_static():
     )
 
 
+def test_reddit_train_partition_hit_static():
+    # 测试reddit数据集在对训练集进行分区的情况下，使用预采样策略的命中率
+    cache = CacheProfiler()
+    cache.init_config(
+        dataset_name="Reddit",
+        gpu_list=[0, 1, 2, 3],
+        sample_gpu=0,
+        static_cache_policy="frequency_separate",
+        static_cache_ratio=0.8,
+        partition_strategy="msbfs",
+    )
+    cache.get_nids_all_frequency()
+    cache.cache_nids_to_gpus()
+    cache.static_cache_analysis_on_multiple()
+
+
 if __name__ == "__main__":
-    test_livejournel_hit_static()
+    test_reddit_train_partition_hit_static()
