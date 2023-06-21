@@ -28,3 +28,8 @@ srcs/python/torch_quiver.egg-info/
 
 compile_commands.json
 .VSCodeCounter/
+
+.png
+.svg
+.jpg
+.jpeg
