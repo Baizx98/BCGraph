@@ -64,21 +64,25 @@ def reddit_test():
     graph = nx.from_edgelist(edge_list, create_using=nx.Graph())
     # print(nx.info(graph))
     mid = time.time()
-    print(mid - start)
-    shortest_path_length = {}
-    i = 0
-    for u in idx:
-        i += 1
-        if i % 20 == 0:
-            print(i)
-        shortest_path_length[u] = {}
-        for v in idx:
-            if u != v:
-                shortest_path_length[u][v] = nx.shortest_path_length(graph, u, v)
-    print(shortest_path_length)
-    end = time.time()
-    print(str(end - mid))
-    np.save("/home8t/bzx/padata/reddit/path.npy", shortest_path_length)
+    print("time to build graph:", mid - start)
+    print(type(train_idx))
+    print(train_idx)
+    source_nodes = random.sample(train_idx.tolist(), 4)
+    print(source_nodes)
+    spl_dic = {}
+    for i, start_node in enumerate(source_nodes):
+        shortest_path = nx.single_source_dijkstra_path_length(graph, start_node)
+        spl_dic[i] = shortest_path
+    print(spl_dic)
+    return source_nodes, spl_dic
+    # for u in idx:
+    #     shortest_path_length[u] = {}
+    #     for v in idx:
+    #         if u != v:
+    #             shortest_path_length[u][v] = nx.shortest_path_length(graph, u, v)
+    # end = time.time()
+    # print(str(end - mid))
+    # np.save("/home8t/bzx/padata/reddit/path.npy", shortest_path_length)
 
 
 def msbfs_train_partition(
@@ -212,7 +216,7 @@ def msbfs_train_partition(
     return pa_list_dic
 
 
-def train_partition_test():
+def msbfs_train_partition_test():
     csrtopo = quiver.CSRTopo(edge_index=edge_index)
     res = msbfs_train_partition(csrtopo=csrtopo, train_idx=idx, partition_num=4)
     for key, value in res.items():
@@ -220,9 +224,36 @@ def train_partition_test():
     np.save("/home8t/bzx/padata/reddit/pa_li_dic" + str(time.time()) + ".npy", res)
 
 
+def spl_train_partition_demo():
+    start = time.time()
+    G = nx.fast_gnp_random_graph(1000000, 0.001)
+    end = time.time()
+    print(end - start)
+    # plt.figure(figsize=(50, 50))
+    # nx.draw_networkx(G, font_size=2)
+    # plt.tight_layout()
+    # plt.savefig(
+    #     "a.png",
+    #     dpi=300,
+    # )
+
+    source_nodes = random.sample(G.nodes(), 4)
+    print(type(source_nodes))
+    spl_dic = {}
+    start = time.time()
+    for i, start_node in enumerate(source_nodes):
+        shortest_path = nx.single_source_dijkstra_path_length(G, start_node)
+        print(type(shortest_path))
+        spl_dic[i] = shortest_path
+    end = time.time()
+    print(end - start)
+    # print(spl_dic)
+
+
 if __name__ == "__main__":
     set_random_seed(1998)
     # demo_test()
     # reddit_test()
     # train_idx_partition(1, train_idx=idx, partition_num=4)
-    train_partition_test()
+    # msbfs_train_partition_test()
+    spl_train_partition_demo()
