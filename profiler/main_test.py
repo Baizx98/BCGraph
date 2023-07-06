@@ -54,6 +54,22 @@ def test_livejournel_hit_static():
     )
 
 
+def test_reddit_hit_static_frequency():
+    cache = CacheProfiler()
+    cache.init_config(
+        dataset_name="Reddit",
+        gpu_list=[0],
+        sample_gpu=0,
+        static_cache_policy="frequency",
+        static_cache_ratio=0.2,
+        batch_size=1024,
+    )
+    cache.get_nids_all_frequency(4)
+    cache.cache_nids_to_gpu()
+    a = cache.static_cache_analysis_on_single()
+    print(a[0])
+
+
 def test_reddit_train_partition_msbfs_hit_static(cache_ratio: float = 0.8):
     # 测试reddit数据集在对训练集进行分区的情况下，使用预采样策略的命中率
     cache = CacheProfiler()
@@ -112,6 +128,7 @@ def test_sub_graph_num():
 
 
 if __name__ == "__main__":
-    for i in range(1, 10):
-        print("第" + str(i) + "次")
-        test_reddit_train_partition_linear_msbfs_hit_static(i / 10)
+    # for i in range(1, 10):
+    #     print("第" + str(i) + "次")
+    #     test_reddit_train_partition_linear_msbfs_hit_static(i / 10)
+    test_reddit_hit_static_frequency()
