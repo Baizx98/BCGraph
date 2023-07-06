@@ -85,6 +85,158 @@ def reddit_test():
     # np.save("/home8t/bzx/padata/reddit/path.npy", shortest_path_length)
 
 
+def linear_msbfs_train_partiton(
+    csrtopo: quiver.CSRTopo, train_idx: np.ndarray, partition_num: int
+):
+    """基于多源BFS遍历的线性训练集划分算法
+    非并行版本的线性-多源BFS训练集划分算法.与msbfs的区别是该版本不在遍历过程中完成训练集的划分,
+    而是遍历完成后再遍历训练集节点，根据BFS的层数进行划分,
+    并且限制了每个分区的训练节点数最多为分区平均节点数,
+    贪心算法,可以得到近似解,每个分区的不规则度可能不随机
+
+    Args:
+        csrtopo (quiver.CSRTopo): _description_
+        train_idx (np.ndarray): _description_
+        partition_num (int): _description_
+    Returns:
+        dic: 训练集路径分区字典
+    """
+    # `{1:[3,4,5],2:[6,7,8],3:[,9,10,11],4:[12,13,14]}`
+    pa_list_dic = {i: [] for i in range(partition_num)}
+    train_idx_num = train_idx.shape[0]
+    # 训练节点的标记,用来快速判断一个节点是否是训练节点
+    train_mask: np.ndarray = np.zeros(csrtopo.node_count, dtype=bool)
+    train_mask[train_idx] = True
+    # 标记节点是否被访问过
+    train_visited: np.ndarray = np.zeros(train_idx_num, dtype=bool)
+    full_visited: np.ndarray = np.zeros(csrtopo.node_count, dtype=bool)
+    # TODO根据训练节点索引找id，可以用索引和元素互换的方式存储
+    train_idx = train_idx.numpy()
+    train_index_dic = {id: index for index, id in enumerate(train_idx)}
+    # 种子节点
+    # ?时刻注意tensor和numpy的数据类型，此处统一用numpy
+    # [23,57,56,43]
+    start_idx = random.sample(range(train_idx_num), partition_num)
+    start_idx = train_idx[start_idx]
+    print(type(start_idx))
+    # 根据种子节点id找分区列表的ID
+    seed_index_dic = {seed: index for index, seed in enumerate(start_idx)}
+    # 创建分区的当前和下一轮队列
+    bfs_queues = {
+        i: {"now_que": collections.deque(), "next_que": collections.deque()}
+        for i in range(partition_num)
+    }
+    # 创建距离字典 {源节点:{目标节点:距离}}
+    distance_dic = {i: {} for i in start_idx}
+    # 初始化bfs队列
+    for i, id in enumerate(start_idx):
+        bfs_queues[i]["now_que"].append(id)
+    # 创建邻居节点set，用来保存每层遍历中节点的所有邻居节点（并去重）
+    neighbors_to_next = set()
+    # 共遍历wordl size次,每次遍历都访问所有的训练节点后停止，获取距离字典，种子节点到每个训练节点的距离
+    # 分层遍历，获取距离字典
+    # 保证加入next que的节点都是未被访问过的
+    # 每次从now que弹出节点后就设置visited标记
+    # 如果一个节点已经被访问过，那说明其邻居节点已经被加入过next que
+    # 访问到一个新节点后，将其没有被访问过的邻居加入next que中
+    # 这样可以保证每个新弹出的节点都是未被访问过的，也就不需要再判断并continue
+    for index, seed_id in enumerate(start_idx):
+        layer_num = 0
+        train_visited_count = 0
+        # ?此处应该考虑使用全图节点访问次数来作为遍历结束的条件？也不见得，这样的结果也是正确的
+        while train_visited_count < train_idx_num:
+            while bfs_queues[index]["now_que"]:
+                # 访问新节点并设置标记
+                # 只有训练节点才需要加入距离字典和设置训练标记
+                nid = bfs_queues[index]["now_que"].popleft()
+                full_visited[nid] = True
+                if train_mask[nid]:
+                    train_visited[train_index_dic[nid]] = True
+                    train_visited_count += 1
+                    distance_dic[seed_id][nid] = layer_num
+                neighbors_of_nid = csrtopo.indices[
+                    csrtopo.indptr[nid] : csrtopo.indptr[nid + 1]
+                ].numpy()
+                neighbors_to_next.update(neighbors_of_nid)
+            ...
+            layer_num += 1
+            # 剔除已访问的节点
+            temp_set = {
+                neighbor
+                for neighbor in neighbors_to_next
+                if full_visited[neighbor] == False
+            }
+            neighbors_to_next.clear()
+            neighbors_to_next.update(temp_set)
+            # 将未访问的节点加入next que
+            # 此处甚至都不需要next que，因为已经使用了set作为下一层遍历对象的容器
+            bfs_queues[index]["next_que"].extend(neighbors_to_next)
+            # 交换队列
+            bfs_queues[index]["now_que"], bfs_queues[index]["next_que"] = (
+                bfs_queues[index]["next_que"],
+                bfs_queues[index]["now_que"],
+            )
+            print("一层遍历结束")
+        print("一次遍历结束")
+        train_visited: np.ndarray = np.zeros(train_idx_num, dtype=bool)
+        full_visited: np.ndarray = np.zeros(csrtopo.node_count, dtype=bool)
+        neighbors_to_next.clear()
+        # 输出距离字典
+        with open(
+            "profiler/data/debug/linear_msbfs_train_partiton_distance.txt", "w"
+        ) as f:
+            for key, value in distance_dic.items():
+                output = "key:{},value:{}".format(key, value)
+                f.write(output)
+    # 以上已经获取到多源BFS得到的距离字典
+    # 一下开始进行线性分区
+    # 遍历训练集，获取训练集分区
+    # TODO 遍历训练集时是否要打乱训练集顺序呢？
+    # TODO 将邻居节点的度考虑在内
+    # TODO 要考虑每个分区的节点数是否为平均数向下取整或向上取整
+    # 向下取整，当填充至最后一个分区时，无需判断就可以将所有的训练节点加入最后一个分区
+    ave_pa_size = train_idx_num // partition_num
+    partition_nodes_count = [0] * partition_num
+    copy_distance_dic = distance_dic.copy()
+    for train_id in train_idx:
+        # 10000是预先设定的一个很大的距离，是查找失败时返回的默认值
+        seed = min(
+            copy_distance_dic, key=lambda x: copy_distance_dic[x].get(train_id, 10000)
+        )
+        # TODO 此处需要精心地设计，如果最小值有多个，min函数只会返回第一个
+        # TODO 而事实上，这种情况下需要其他的指标来决定将训练节点划分到哪个分区
+        ...  # 这里可能需要添加关于度的指标
+
+        # 获取种子节点对应的分区id
+        pa_list_id = seed_index_dic[seed]
+        pa_list_dic[pa_list_id].append(train_id)
+        partition_nodes_count[pa_list_id] += 1
+        # 复制一份distance dic，如果一个分区分配满了，就将其从距离字典中剔除
+        # 距离字典中的元素大于1时，删除距离字典的元素
+        if partition_nodes_count[pa_list_id] >= ave_pa_size:
+            if len(copy_distance_dic) > 1:
+                del copy_distance_dic[seed]
+    return pa_list_dic
+
+
+def linear_msbfs_train_partiton_test():
+    ...
+    csrtopo = quiver.CSRTopo(edge_index=edge_index)
+    start = time.time()
+    res = linear_msbfs_train_partiton(
+        csrtopo=csrtopo, train_idx=train_idx, partition_num=4
+    )
+    path = "profiler/data/debug/linear_msbfs_train_partiton_res.txt"
+    with open(path, "w") as f:
+        for key, value in res.items():
+            output = "key:{},value:{}".format(key, value)
+            f.write(output)
+
+    end = time.time()
+    print(end - start)
+    return res
+
+
 def msbfs_train_partition(
     csrtopo: quiver.CSRTopo,
     train_idx: np.ndarray,
@@ -133,6 +285,7 @@ def msbfs_train_partition(
     for i, id in enumerate(start_idx):
         print("seed id type:", type(id))
         bfs_queues[i]["now_que"].append(id)
+        pa_list_dic[i].append(id)  # 初始化分区列表，将种子节点加入其中
     # 创建邻居节点set，用来保存每层遍历中节点的所有邻居节点（并去重）
     neighbors_to_next = set()
     # 对所有分区分层地进行循环分配，直到所有的训练节点都被分配完毕
@@ -256,4 +409,5 @@ if __name__ == "__main__":
     # reddit_test()
     # train_idx_partition(1, train_idx=idx, partition_num=4)
     # msbfs_train_partition_test()
-    spl_train_partition_demo()
+    # spl_train_partition_demo()
+    linear_msbfs_train_partiton_test()

@@ -15,6 +15,7 @@ import scipy.sparse as sp
 
 import quiver
 import tool
+import patititon_test
 
 
 class CacheProfiler:
@@ -53,6 +54,8 @@ class CacheProfiler:
         self.dynamic_cache = None
         self.dynamic_cache_policy = None
         self.dynamic_cache_capacity = 0
+
+        self.partition_strategy = None
 
         # log
         logging.basicConfig(
@@ -143,6 +146,7 @@ class CacheProfiler:
             drop_last=True,
         )
         if self.world_size > 1:
+            self.partition_strategy = partition_strategy
             self.train_idx_parallel: List[torch.Tensor] = self.get_train_idx_parallel(
                 partition_strategy
             )
@@ -185,11 +189,16 @@ class CacheProfiler:
         logging.info("config inited")
 
     def get_train_idx_parallel(self, partition_strategy: str):
+        logging.info("train partition strategy is " + partition_strategy)
         # 在多GPU场景下数据并行训练时，为每个GPU分配不同的训练节点
         train_idx_parallel = []
         if partition_strategy == "msbfs":
             path = "/home8t/bzx/padata/reddit/pa_li_dic1686533982.7872248.npy"
             pa_list_dic: Dict[int, List[int]] = np.load(path, allow_pickle=True).item()
+            for i in range(self.world_size):
+                train_idx_parallel.append(torch.tensor(pa_list_dic[i]))
+        if partition_strategy == "linear-msbfs":
+            pa_list_dic = patititon_test.linear_msbfs_train_partiton_test()
             for i in range(self.world_size):
                 train_idx_parallel.append(torch.tensor(pa_list_dic[i]))
         if partition_strategy == "shortest-path":
@@ -555,51 +564,64 @@ class CacheProfiler:
                 n_id, _, _ = self.quiver_sample.sample(mini_batch)
                 access_count += n_id.size(0)
                 print("i:", i)
-                hit_n_id: set = set(self.gpu_cached_ids_list[i].tolist()) & set(
-                    n_id.tolist()
-                )
-                hit_count += len(hit_n_id)
+                gpu_now_access_set = set(n_id.tolist())
+                hit_ratio_data = [0] * self.world_size
+                # for 循环
+                for gpu_id in range(i, i + self.world_size):
+                    id = gpu_id % self.world_size
+                    hit_set = gpu_now_access_set & set(
+                        self.gpu_cached_ids_list[id].tolist()
+                    )
+                    hit_count += len(hit_set)
+                    hit_ratio_data[id] = len(hit_set) / n_id.size(0)
+                    gpu_now_access_set = gpu_now_access_set - hit_set
+                # ------------#
                 if batch_id % 10 == 0:
                     print(
                         "{}".format(
                             n_id.size(0),
                         )
                     )
-                batch_hit_ratio = len(hit_n_id) / n_id.size(0)
+                # -------------#
                 data.append(
                     [
                         i,
                         batch_id,
                         self.static_cache_ratio,
-                        batch_hit_ratio,
                         len(self.train_idx_parallel[i]),
                         n_id.size(0),
                     ]
+                    + hit_ratio_data
                 )
                 print(
                     i,
                     batch_id,
                     self.static_cache_ratio,
-                    batch_hit_ratio,
                     len(self.train_idx_parallel[i]),
                     n_id.size(0),
                 )
             hit_ratio.append(hit_count / access_count)
+        # -----------------------#
+        hit_ratio_columns = [
+            "gpu" + str(i) + "_hit_ratio" for i in range(self.world_size)
+        ]
         df = pd.DataFrame(
             data,
             columns=[
                 "gpu_id",
                 "batch_id",
                 "cache_ratio",
-                "hit_ratio",
                 "sub_train_num",
                 "sub_graph_num",
-            ],
+            ]
+            + hit_ratio_columns,
         )
         df.to_csv(
             tool.get_profiler_data_save_path(
                 item="train_partition",
-                file_name=str(self.static_cache_ratio) + "reddit_hit.csv",
+                file_name=self.partition_strategy
+                + str(self.static_cache_ratio)
+                + "reddit_hit.csv",
             ),
             index=False,
         )
